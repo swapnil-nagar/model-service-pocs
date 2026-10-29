@@ -10,17 +10,17 @@
       "requests": [
         {
           "tenant": "customer-a",
-          "worker_pid": 65256,
-          "workspace_id": "model-run-zn6q9vgv",
+          "worker_pid": 42304,
+          "workspace_id": "model-run-61jhi0jd",
           "turn": 1,
-          "elapsed_ms": 398.52
+          "elapsed_ms": 378.48
         },
         {
           "tenant": "customer-b",
-          "worker_pid": 75848,
-          "workspace_id": "model-run-e81d1nw5",
+          "worker_pid": 29700,
+          "workspace_id": "model-run-tar92yng",
           "turn": 1,
-          "elapsed_ms": 396.79
+          "elapsed_ms": 380.15
         }
       ],
       "mock_backend_calls": 0,
@@ -34,17 +34,17 @@
       "requests": [
         {
           "tenant": "customer-a",
-          "worker_pid": 65464,
-          "workspace_id": "model-run-1xjtirpe",
+          "worker_pid": 20116,
+          "workspace_id": "model-run-9f1yiedr",
           "turn": 1,
-          "elapsed_ms": 361.16
+          "elapsed_ms": 369.66
         },
         {
           "tenant": "customer-b",
-          "worker_pid": 36460,
-          "workspace_id": "model-run-q03bwumo",
+          "worker_pid": 14752,
+          "workspace_id": "model-run-13ct8e6p",
           "turn": 1,
-          "elapsed_ms": 334.08
+          "elapsed_ms": 369.7
         }
       ],
       "mock_backend_calls": 0,
@@ -58,17 +58,17 @@
       "requests": [
         {
           "tenant": "customer-a",
-          "worker_pid": 53544,
-          "workspace_id": "model-run-gy2jwkns",
+          "worker_pid": 28252,
+          "workspace_id": "model-run-i8s_y9fn",
           "turn": 1,
-          "elapsed_ms": 514.06
+          "elapsed_ms": 475.02
         },
         {
           "tenant": "customer-b",
-          "worker_pid": 54324,
-          "workspace_id": "model-run-qtek20sj",
+          "worker_pid": 69396,
+          "workspace_id": "model-run-bjmvn3gs",
           "turn": 1,
-          "elapsed_ms": 517.94
+          "elapsed_ms": 474.7
         }
       ],
       "mock_backend_calls": 2,
@@ -82,17 +82,17 @@
       "requests": [
         {
           "tenant": "customer-a",
-          "worker_pid": 88940,
-          "workspace_id": "model-run-cnjz8jjz",
+          "worker_pid": 22004,
+          "workspace_id": "model-run-vsg3i65q",
           "turn": 1,
-          "elapsed_ms": 337.5
+          "elapsed_ms": 324.62
         },
         {
           "tenant": "customer-b",
-          "worker_pid": 20484,
-          "workspace_id": "model-run-ykctj955",
+          "worker_pid": 61840,
+          "workspace_id": "model-run-mhmf6qlf",
           "turn": 1,
-          "elapsed_ms": 334.38
+          "elapsed_ms": 323.74
         }
       ],
       "mock_backend_calls": 0,

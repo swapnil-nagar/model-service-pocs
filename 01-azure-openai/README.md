@@ -38,7 +38,10 @@ Authenticated customer -> tenant-bound dispatcher -> fresh inference worker
 
 ## Fit and limits
 
-Best first pilot for OpenAI-only customers: smallest runtime integration change.
+This is a low-change alternative when dedicated resources are required, not the
+default for the current shared-deployment investigation. This fixture uses
+separate endpoints and no cache, so it does not answer shared prompt/KV-cache
+isolation. See the [concern audit](../REPORT.md#meeting-concern-coverage).
 Deployment/resource isolation does not establish physical GPU exclusivity.
 PTU is a throughput/capacity choice, not proof of dedicated physical hardware.
 See the [comparison and acceptance gates](../REPORT.md).

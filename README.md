@@ -7,6 +7,28 @@ a real model. This repository is standalone; the
 [Azure Functions Agents runtime](https://github.com/Azure/azure-functions-agents-runtime)
 is an external reference, not a dependency or bundled checkout.
 
+## Investigation scope
+
+The current question is **tenant/session isolation while sharing model
+deployments and caches**, not a requirement to create a deployment per customer.
+The [concern audit](REPORT.md#meeting-concern-coverage) maps all follow-ups to
+evidence and remaining closure requirements.
+
+POCs 01-04 still use distinct endpoints/credentials and no prompt/KV or response
+cache. POC 05 mocks a GitHub SDK boundary. Their passing tests do not establish
+shared-deployment/cache isolation, portal ACA isolation, model quality, or GA
+readiness. The report now contains source-backed shared-serving/cache research,
+runtime storage/routing findings, optimization/evaluation assessment, and an
+explicit list of blocked approval/portal/coordination items. No new shared-service
+implementation was introduced for that investigation.
+
+The final report records **27 passing POC test methods** and **95 passing
+runtime-source test cases**. The latter were run separately from the external
+runtime checkout with its locked dependencies; they are not bundled tests or
+an additional dependency for running these POCs. Approvals, portal validation,
+ownership handoff, and GA decisions remain explicitly unclosed where evidence
+is unavailable.
+
 ## Run on Windows
 
 Python 3.13+ and its standard library are sufficient. No package installation,

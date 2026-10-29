@@ -43,7 +43,10 @@ Authenticated customer -> tenant-bound dispatcher -> fresh inference worker
 
 ## Fit and limits
 
-Best candidate when publisher/model flexibility is important. Foundry and Azure
+This dedicated-endpoint fixture explores publisher/model flexibility; it does
+not validate the current shared-deployment/cache objective or require a
+deployment per customer. See the [concern audit](../REPORT.md#meeting-concern-coverage).
+Foundry and Azure
 OpenAI are overlapping Azure offerings, not unrelated vendors. Neither a
 resource boundary nor a project boundary proves dedicated physical inference
 hardware. See the [report](../REPORT.md) for runtime integration options.
