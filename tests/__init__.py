@@ -1,0 +1,1 @@
+"""Local architecture contract tests."""

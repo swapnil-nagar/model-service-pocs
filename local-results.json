@@ -1,0 +1,130 @@
+{
+  "schema_version": 2,
+  "note": "Local HTTP/process or SDK-mock timings, NOT model inference benchmarks.",
+  "results": [
+    {
+      "approach": "azure-openai",
+      "mode": "local_mock_only",
+      "tenant_calls": 2,
+      "distinct_workspaces": 2,
+      "requests": [
+        {
+          "tenant": "customer-a",
+          "worker_pid": 65256,
+          "workspace_id": "model-run-zn6q9vgv",
+          "turn": 1,
+          "elapsed_ms": 398.52
+        },
+        {
+          "tenant": "customer-b",
+          "worker_pid": 75848,
+          "workspace_id": "model-run-e81d1nw5",
+          "turn": 1,
+          "elapsed_ms": 396.79
+        }
+      ],
+      "mock_backend_calls": 0,
+      "azure_network_compute_isolation": "not_tested"
+    },
+    {
+      "approach": "foundry",
+      "mode": "local_mock_only",
+      "tenant_calls": 2,
+      "distinct_workspaces": 2,
+      "requests": [
+        {
+          "tenant": "customer-a",
+          "worker_pid": 65464,
+          "workspace_id": "model-run-1xjtirpe",
+          "turn": 1,
+          "elapsed_ms": 361.16
+        },
+        {
+          "tenant": "customer-b",
+          "worker_pid": 36460,
+          "workspace_id": "model-run-q03bwumo",
+          "turn": 1,
+          "elapsed_ms": 334.08
+        }
+      ],
+      "mock_backend_calls": 0,
+      "azure_network_compute_isolation": "not_tested"
+    },
+    {
+      "approach": "apim",
+      "mode": "local_mock_only",
+      "tenant_calls": 2,
+      "distinct_workspaces": 2,
+      "requests": [
+        {
+          "tenant": "customer-a",
+          "worker_pid": 53544,
+          "workspace_id": "model-run-gy2jwkns",
+          "turn": 1,
+          "elapsed_ms": 514.06
+        },
+        {
+          "tenant": "customer-b",
+          "worker_pid": 54324,
+          "workspace_id": "model-run-qtek20sj",
+          "turn": 1,
+          "elapsed_ms": 517.94
+        }
+      ],
+      "mock_backend_calls": 2,
+      "azure_network_compute_isolation": "not_tested"
+    },
+    {
+      "approach": "azure-ml",
+      "mode": "local_mock_only",
+      "tenant_calls": 2,
+      "distinct_workspaces": 2,
+      "requests": [
+        {
+          "tenant": "customer-a",
+          "worker_pid": 88940,
+          "workspace_id": "model-run-cnjz8jjz",
+          "turn": 1,
+          "elapsed_ms": 337.5
+        },
+        {
+          "tenant": "customer-b",
+          "worker_pid": 20484,
+          "workspace_id": "model-run-ykctj955",
+          "turn": 1,
+          "elapsed_ms": 334.38
+        }
+      ],
+      "mock_backend_calls": 0,
+      "azure_network_compute_isolation": "not_tested"
+    },
+    {
+      "approach": "github-fusion",
+      "mode": "local_sdk_mock_only",
+      "status": "conditional",
+      "model_id": "fusion",
+      "tenant_calls": 2,
+      "mock_sdk_clients": 2,
+      "distinct_sdk_sessions": 2,
+      "requests": [
+        {
+          "tenant": "customer-a",
+          "sdk_session_id": "fusion-b5092fefe04ee98b57b40afa04bd4b6627348989f49ebf051fa5249290d79d71",
+          "turn": 1,
+          "elapsed_ms": 0.24
+        },
+        {
+          "tenant": "customer-b",
+          "sdk_session_id": "fusion-02eba3a94ea0b08e489e63728049f403fcbb1365013b422f9a9ab0e1cea40f7b",
+          "turn": 1,
+          "elapsed_ms": 0.14
+        }
+      ],
+      "github_model_calls": 0,
+      "fusion_effort_tier": "not_validated",
+      "internal_execution_patterns": "not_observed_or_simulated",
+      "process_container_isolation": "not_exercised",
+      "github_network_compute_isolation": "not_tested"
+    }
+  ]
+}
