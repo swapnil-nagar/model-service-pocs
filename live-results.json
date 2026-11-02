@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "mode": "live_foundry_apim",
+  "completed_at_utc": "2026-10-30T17:36:10.455124+00:00",
+  "synthetic_tenants": 2,
+  "successful_inference_calls": 4,
+  "checks": {
+    "missing_key_rejected": true,
+    "invalid_key_rejected": true,
+    "tenant_spoof_rejected": true,
+    "unapproved_model_rejected": true,
+    "cross_tenant_run_read_rejected": true,
+    "own_context_recall_observed": true,
+    "no_other_tenant_canary_observed": true,
+    "two_turns_per_tenant": true,
+    "one_shared_deployment": true,
+    "distinct_run_correlations": true
+  },
+  "measurements": [
+    {
+      "tenant": "customer-a",
+      "turn": 1,
+      "elapsed_ms": 904.43,
+      "reported_models": [
+        "gpt-4.1-mini-2025-04-14"
+      ],
+      "input_tokens": 75,
+      "output_tokens": 1,
+      "cached_input_tokens": 0
+    },
+    {
+      "tenant": "customer-b",
+      "turn": 1,
+      "elapsed_ms": 540.81,
+      "reported_models": [
+        "gpt-4.1-mini-2025-04-14"
+      ],
+      "input_tokens": 73,
+      "output_tokens": 1,
+      "cached_input_tokens": 0
+    },
+    {
+      "tenant": "customer-a",
+      "turn": 2,
+      "elapsed_ms": 2095.54,
+      "reported_models": [
+        "gpt-4.1-mini-2025-04-14"
+      ],
+      "input_tokens": 97,
+      "output_tokens": 16,
+      "cached_input_tokens": 0
+    },
+    {
+      "tenant": "customer-b",
+      "turn": 2,
+      "elapsed_ms": 1404.69,
+      "reported_models": [
+        "gpt-4.1-mini-2025-04-14"
+      ],
+      "input_tokens": 95,
+      "output_tokens": 14,
+      "cached_input_tokens": 0
+    }
+  ],
+  "state_durability": "ephemeral_single_replica",
+  "provider_kv_cache_partitioning": "not_verified",
+  "fusion": "not_deployed_feature_enablement_blocked",
+  "note": "Canary recall is an observation, not proof of provider cache isolation. Structural history/auth boundaries are also covered by deterministic tests."
+}

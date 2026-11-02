@@ -1,0 +1,15 @@
+**
+!Dockerfile.live
+!requirements-live.lock
+!live_pocs/
+!live_pocs/*.py
+!model_service/
+!model_service/__init__.py
+!model_service/authorization.py
+!model_service/contracts.py
+.git/
+.venv/
+.copilot-azure/
+**/__pycache__/
+**/.env*
+**/*.pem

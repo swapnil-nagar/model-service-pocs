@@ -1,0 +1,53 @@
+{
+  "application_id": "hosted-skills",
+  "public_base_url": "https://your-model-service.example",
+  "registry": {
+    "backend": "azure_table",
+    "azure_endpoint": "https://youraccount.table.core.windows.net",
+    "table_name": "ModelSessionBindings",
+    "development_credential": false
+  },
+  "endpoints": {
+    "mini-20250414": {
+      "base_url": "https://your-foundry-resource.openai.azure.com/openai/v1",
+      "deployment": "your-mini-deployment",
+      "model_name": "gpt-4.1-mini",
+      "model_version": "2025-04-14",
+      "reported_model": "gpt-4.1-mini-2025-04-14",
+      "api_key_env": "MODEL_SERVICE_MINI_KEY",
+      "auth_header": "api-key",
+      "max_prompt_tokens": 32768,
+      "max_output_tokens": 4096
+    },
+    "standard-20250414": {
+      "base_url": "https://your-other-foundry-resource.openai.azure.com/openai/v1",
+      "deployment": "your-standard-deployment",
+      "model_name": "gpt-4.1",
+      "model_version": "2025-04-14",
+      "reported_model": "gpt-4.1-2025-04-14",
+      "api_key_env": "MODEL_SERVICE_STANDARD_KEY",
+      "auth_header": "api-key",
+      "max_prompt_tokens": 32768,
+      "max_output_tokens": 4096
+    }
+  },
+  "models": {
+    "economy": "mini-20250414",
+    "quality": "standard-20250414"
+  },
+  "customers": {
+    "customer-a": {
+      "api_key_env": "MODEL_SERVICE_CUSTOMER_A_KEY",
+      "allowed_models": ["economy", "quality"],
+      "allowed_agents": ["assistant"]
+    },
+    "customer-b": {
+      "api_key_env": "MODEL_SERVICE_CUSTOMER_B_KEY",
+      "allowed_models": ["economy"],
+      "allowed_agents": ["assistant"]
+    }
+  },
+  "upstream_timeout_seconds": 25,
+  "max_request_bytes": 4194304,
+  "max_response_bytes": 8388608
+}

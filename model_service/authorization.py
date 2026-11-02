@@ -28,6 +28,11 @@ def authorize_request(
         raise ModelServiceError("unauthenticated")
     if tenant != request.tenant_id:
         raise ModelServiceError("tenant_mismatch")
+    validate_request(request)
+    return tenant
+
+
+def validate_request(request: Request) -> None:
     if request.agent_id not in {"assistant", "reviewer"}:
         raise ModelServiceError("agent_not_allowed")
     if not valid_identifier(request.session_id):
@@ -36,4 +41,3 @@ def authorize_request(
         raise ModelServiceError("model_not_allowed")
     if not request.prompt.strip() or len(request.prompt) > 8192:
         raise ModelServiceError("invalid_prompt")
-    return tenant

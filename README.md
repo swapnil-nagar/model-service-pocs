@@ -1,11 +1,47 @@
 # Hosted Skills model-service POCs
 
-Five runnable, **local-only architecture experiments** for customer-isolated LLM
-calls: four HTTP/process experiments and one conditional GitHub Copilot Fusion
-SDK-boundary experiment. Nothing provisions cloud resources or sends prompts to
-a real model. This repository is standalone; the
+The original five **local-only architecture experiments** cover customer-isolated
+LLM calls: four HTTP/process experiments and one conditional GitHub Copilot
+Fusion SDK-boundary experiment. Their default commands never provision cloud
+resources or send prompts to real models. This repository is standalone; the
 [Azure Functions Agents runtime](https://github.com/Azure/azure-functions-agents-runtime)
 is an external reference, not a dependency or bundled checkout.
+
+An **explicit opt-in hosted extension** now lives separately from those mocks:
+[POC 06: shared Foundry/APIM](06-shared-foundry-apim/README.md). Its source,
+deterministic tests and fixed IaC are prepared. The Azure foundation is now
+provisioned, the real image is healthy, and **bounded live acceptance passed**:
+four successful turns across two synthetic tenants and all ten checks passed.
+See the [live results](live-results.json) and [report](REPORT.md) for measurements,
+earlier failed attempts and the production/isolation limits. These are not mock
+results or a production-readiness certification.
+The [real Fusion SDK preflight is blocked](05-github-fusion/README.md#live-sdk-preflight);
+the user kept that workstream pending enablement rather than deploying an
+unused Fusion runner or substituting another model.
+
+## Integrated architecture design
+
+[DESIGN.md](DESIGN.md) explains the Functions Host, HostedSkill/MAF agent runtime,
+and shared model service in detail. It includes current and proposed architecture
+diagrams, tool/model request sequences, tenant identity and state ownership,
+durability, caching, API contracts, deployment boundaries, and acceptance gates.
+The proposed Functions-to-model-service adapter is not yet implemented; the
+standalone live POC evidence remains separate.
+
+## Durable 24-hour session routing
+
+[POC 07: session affinity](07-session-affinity/README.md) implements a separate
+opt-in customer model service. It selects among approved model endpoints,
+atomically persists a tenant/agent/session binding for **24 fixed hours**, and
+forwards Copilot SDK context through a session-scoped Chat Completions URL.
+Azure Table Storage is the hosted registry; SQLite supports local verification.
+There is no second transcript, sliding renewal, silent model change or fallback.
+JSON, function-tool messages and SSE are supported.
+
+The code and local/native-SDK tests are implemented; the new service/table have
+**not** been deployed or tested against live Azure. The existing POC 06 image,
+routes and recorded paid results are unchanged. See the guide for configuration,
+expiry behavior, SDK setup and the limits of the availability guarantee.
 
 ## Investigation scope
 
@@ -22,14 +58,14 @@ runtime storage/routing findings, optimization/evaluation assessment, and an
 explicit list of blocked approval/portal/coordination items. No new shared-service
 implementation was introduced for that investigation.
 
-The final report records **27 passing POC test methods** and **95 passing
+The original offline audit records **27 passing POC test methods** and **95 passing
 runtime-source test cases**. The latter were run separately from the external
 runtime checkout with its locked dependencies; they are not bundled tests or
 an additional dependency for running these POCs. Approvals, portal validation,
 ownership handoff, and GA decisions remain explicitly unclosed where evidence
 is unavailable.
 
-## Run on Windows
+## Run the original mocks on Windows
 
 Python 3.13+ and its standard library are sufficient. No package installation,
 Azure/GitHub login, Docker daemon, API keys, Copilot SDK installation, or network
@@ -136,5 +172,8 @@ clients and sessions run in the same process, so POC 05 proves no OS-level
 isolation. GitHub's published Fusion description does not establish a dedicated
 customer model deployment, private inference endpoint, or exclusive hardware.
 
-No live mode is implemented. HTTP dispatchers/workers require generated loopback
-endpoints; the Fusion experiment has no networking or live SDK implementation.
+The original `run_poc.py` has no live mode. Its HTTP workers still require
+loopback endpoints and its Fusion experiment still uses in-memory SDK mocks.
+Real-provider code is separate under `live_pocs`; deployment and paid validation
+require explicit configuration, guarded commands, and approval. See
+[POC 06](06-shared-foundry-apim/README.md) for that opt-in path and its limits.

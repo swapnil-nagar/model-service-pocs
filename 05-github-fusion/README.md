@@ -8,6 +8,49 @@ but **not a substitute for dedicated customer model/compute/network isolation**.
 The user approved this as a conditional, local SDK-boundary POC with no GitHub
 model calls.
 
+## Live SDK preflight
+
+An actual GitHub-authenticated SDK preflight was added alongside the mocks.
+Authentication succeeded, but tool-disabled `fusion` session construction was
+rejected with:
+
+> The Copilot Fusion model alias requires dynamic Auto tiers.
+
+The check used SDK 1.0.14 with its runtime and the checksum-verified current
+official CLI runtime 1.0.105. The documented experimental-mode setting did not
+resolve the rejection. No prompt was sent: these were catalog/session metadata
+checks, not a successful live Fusion inference or orchestration benchmark.
+Absence from a foundation-model catalog alone is not treated as proof that a
+virtual selector is unavailable.
+
+The user chose to proceed with the Foundry/APIM deployment and retain Fusion
+code/findings pending a GitHub-supported enabled SDK/account configuration.
+**No Fusion Azure runner/identity/API is deployed, no GitHub token is uploaded
+to Azure, and no paid GitHub model request is made by this workstream.**
+Undocumented feature flags, legacy Auto, fixed-model and mock substitutions are
+not used.
+
+The prototype [real SDK adapter](../live_pocs/fusion.py) uses empty mode,
+explicit credentials, separate tenant clients/sessions, deny-by-default tools,
+and explicit initialization/failure handling. Deterministic SDK doubles test
+that wiring; they do not turn the blocked real preflight into a pass.
+Model tier control and internal attribution remain conditional on supported
+provider behavior.
+
+The explicit diagnostic command never sends a prompt:
+
+```powershell
+.\.venv\Scripts\python.exe -B -m scripts.check_fusion_access `
+  --github-account "<explicitly-approved-account>" `
+  --model fusion --validate-session-selector
+```
+
+Use an authorized Copilot-capable credential through the official GitHub CLI;
+never paste tokens into source or chat. Revalidation may require an updated
+supported SDK/runtime or GitHub-side enablement. Public SDK release availability
+does not establish that the current network can restore it or that a tested
+account/runtime enables this feature.
+
 ## Run locally
 
 From the `poc` directory:

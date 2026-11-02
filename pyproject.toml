@@ -1,0 +1,21 @@
+[project]
+name = "hosted-skills-model-service-pocs"
+version = "0.1.0"
+description = "Local model-service experiments with separately approved live POC integrations."
+requires-python = ">=3.13"
+dependencies = []
+
+[project.optional-dependencies]
+live = [
+    "aiohttp==3.14.5",
+    "azure-data-tables==12.7.0",
+    "azure-identity==1.27.0",
+    "fastapi==0.136.1",
+    "github-copilot-sdk==1.0.14",
+    "httpx==0.28.1",
+    "pydantic==2.13.4",
+    "uvicorn==0.47.0",
+]
+
+[tool.uv]
+package = false

@@ -1,0 +1,72 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": {
+      "value": "modelpoc-dev-e8d5"
+    },
+    "location": {
+      "value": "eastus2"
+    },
+    "sessionId": {
+      "value": "e8d5e80d-1879-4b6a-907c-917ba49ec039"
+    },
+    "createdAt": {
+      "value": "2026-10-29T16:04:44.3013339-07:00"
+    },
+    "resourceGroupName": {
+      "value": "rg-modelpoc-dev-e8d5"
+    },
+    "foundryAccountName": {
+      "value": "ai-modelpoc-dev-e8d5"
+    },
+    "modelDeploymentName": {
+      "value": "chat-modelpoc-dev-e8d5"
+    },
+    "apimName": {
+      "value": "apim-modelpoc-dev-e8d5"
+    },
+    "containerEnvironmentName": {
+      "value": "cae-modelpoc-dev-e8d5"
+    },
+    "foundryRunnerName": {
+      "value": "ca-foundry-modelpoc-dev-e8d5"
+    },
+    "acrName": {
+      "value": "crmodelpocdeve8d5"
+    },
+    "keyVaultName": {
+      "value": "kv-modelpoc-dev-e8d5"
+    },
+    "logAnalyticsName": {
+      "value": "log-modelpoc-dev-e8d5"
+    },
+    "appInsightsName": {
+      "value": "appi-modelpoc-dev-e8d5"
+    },
+    "foundryIdentityName": {
+      "value": "id-foundry-modelpoc-dev-e8d5"
+    },
+    "tenantASubscriptionId": {
+      "value": "customer-a-e8d5"
+    },
+    "tenantBSubscriptionId": {
+      "value": "customer-b-e8d5"
+    },
+    "containerImage": {
+      "value": "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest"
+    },
+    "isPlaceholder": {
+      "value": true
+    },
+    "modelName": {
+      "value": "gpt-4.1-mini"
+    },
+    "modelVersion": {
+      "value": "2025-04-14"
+    },
+    "modelCapacity": {
+      "value": 3
+    }
+  }
+}

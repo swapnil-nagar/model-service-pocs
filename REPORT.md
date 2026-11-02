@@ -1,12 +1,98 @@
-# Hosted Skills model service: five-POC evaluation and concern audit
+# Hosted Skills model service: POC evaluation, concern audit and live extension
+
+## Durable session-routing extension
+
+The [24-hour routing service](07-session-affinity/README.md) is now implemented
+as a separate opt-in entry point. It supports approved model endpoints,
+tenant-scoped atomic immutable bindings, fixed 24-hour expiry, and a
+session-specific OpenAI Chat Completions interface for Copilot SDK context.
+There is no second transcript, sliding renewal, silent model change or fallback.
+
+Azure Table Storage is the selected hosted registry, with SQLite for local
+verification. Deterministic expiry/concurrency/owner/proxy tests and an actual
+native-SDK smoke against a synthetic provider validate the local implementation.
+The combined suite passed 125 tests (39 new, 86 existing), focused type checking
+passed, and the 41-package portable lock passed public-hash and Linux pip
+compatibility checks.
+**The new service, table, RBAC and gateway routes have not been deployed or
+tested against live Azure.** This does not turn the old POC's six paid requests
+into evidence of hosted 24-hour persistence. SDK state durability and real
+provider availability/model lifecycle remain separate requirements.
+
+The [design](DESIGN.md#125-implemented-24-hour-session-affinity) records the
+implemented contract, deployment prerequisites, test boundaries and future
+cost-aware admission seam. Adaptive per-request AI routing is not implemented.
+
+## Opt-in hosted POC checkpoint
+
+The original five experiments below remain offline mocks. A separate
+[shared Foundry/APIM hosted extension](06-shared-foundry-apim/README.md) now
+implements the tenant/session/run API and fixed infrastructure for one shared
+model deployment. With explicit provisioning and paid-call approvals, it
+**passed bounded live acceptance on 2026-10-30 at 17:36 UTC**. The real image,
+managed-identity roles, deployment operations, ownership tags and configuration
+health were verified; no placeholder or mock was accepted.
+
+The [sanitized live results](live-results.json) record four successful model
+turns, two per synthetic tenant, against one shared
+`gpt-4.1-mini-2025-04-14` deployment. All ten checks passed: missing/invalid
+credentials, spoofed tenant and unapproved alias rejection; cross-tenant run
+read rejection; own-context recall; no other-tenant canary in the replies;
+two turns per tenant; one deployment; and distinct run correlations.
+
+| Tenant | Turn | Runner elapsed ms | Input tokens | Output tokens | Cached input tokens |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| customer-a | 1 | 904.43 | 75 | 1 | 0 |
+| customer-b | 1 | 540.81 | 73 | 1 | 0 |
+| customer-a | 2 | 2095.54 | 97 | 16 | 0 |
+| customer-b | 2 | 1404.69 | 95 | 14 | 0 |
+
+These are warm-run execution observations, not end-to-end cold-start latency
+or a load/quality benchmark. The successful scenario used 340 input and 32
+output tokens. Provider counters reconciled **six total model requests**,
+492 input and 34 output tokens, including two earlier attempts that did not
+become accepted application turns. At the checked uncached-input/output rates,
+the six-request token-rate estimate is about **USD 0.000251**; this is not an
+invoice and excludes infrastructure, grants, transfer and tax.
+
+Live work exposed and corrected issues that static checks alone missed:
+APIM C# quoting, product-only quota scope, the diagnostics enum, Key Vault
+bootstrap ordering, pip-incompatible MD5 lock options and missing tenant
+response metadata. The tenant guard remained strict. A client timeout and a
+pre-inference cold start were recorded rather than hidden by automatic retries.
+Configuration-only warmup and persistent, non-sensitive stage counters now
+precede the acceptance scenario. Local validation passed **86 tests**
+(59 hosted/adapter/admin tests plus 27 original mock tests). All 20 locked
+package versions/SHA-256 hashes remained unchanged; stock pip and the real
+Linux build passed. All 65 checked resource operations succeeded.
+
+Real GitHub SDK metadata checks authenticated successfully but rejected a
+tool-disabled `fusion` session with: "The Copilot Fusion model alias requires
+dynamic Auto tiers." The current official runtime and documented experimental
+setting did not resolve it. No model prompt was sent. The user explicitly
+selected **Foundry/APIM-only Azure deployment**, retaining the
+[Fusion adapter and findings](05-github-fusion/README.md#live-sdk-preflight)
+pending supported enablement. No Fusion Azure app/identity/API, GitHub-token
+upload, legacy Auto substitution, fixed-model fallback or mock success is
+included in that deployment scope.
+
+The opt-in runner is a standalone model-service POC, not an already-integrated
+HostedSkill platform feature. It has a single replica and temporary state;
+provider KV-cache partitioning, production durability and the original portal's
+isolation remain separate unverified requirements. Scale-to-zero cold-start
+failures were observed; warmup makes this controlled pilot testable, not
+production-ready. Gateway telemetry was checked for zero-byte bodies and
+absence of credential headers. The original [mock snapshot](local-results.json)
+is preserved separately and was not relabeled as live evidence.
 
 ## Executive recommendation
 
 **Scope correction after the meeting-concern review (2026-10-29): investigate
 tenant and session isolation while sharing model deployments and caches.
 A separate model deployment for every customer is not the baseline requirement.**
-The immediate deliverable is evidence and unresolved questions, not a new
-model-service implementation or deployment plan.
+For that original audit, the immediate deliverable was evidence and unresolved
+questions, not a new implementation. The later approved hosted extension above
+is a separate workstream.
 
 Foundry documents a shared-resource/shared-deployment approach, with tenant
 isolation enforced by the application and its data layer. Investigate that
@@ -34,10 +120,13 @@ remain distinct concerns with distinct closure evidence.
 
 POCs 01-04 use Microsoft Azure services; POC 05 evaluates a GitHub service.
 OpenAI, Microsoft, Meta, and other catalog publishers are model publishers,
-not five independent cloud vendors. No live model or publisher has been
-benchmarked here.
+not five independent cloud vendors. The original five experiments did not
+benchmark a live model or publisher. POC 06 above adds a bounded functional
+test of one model, not a representative model-quality comparison.
 
 ## Final report disposition
+
+This subsection records the original offline audit, not the later live extension.
 
 Finalized on **2026-10-29** against runtime commit `5174e72`. All ten follow-up
 tasks and both additional product themes have a recorded finding, evidence
@@ -73,7 +162,7 @@ to confirm; they are not accepted assignments or completed ownership transfers.
 | ID | Concern | Current evidence/status | Accountable role to confirm | What remains to close it |
 | --- | --- | --- | --- | --- |
 | F01 | Shared model deployment and prompt/KV-cache isolation | **Research conclusion recorded; provider qualification remains open.** Shared serving is documented; provider prompt caching is not conversation memory. Existing POCs use separate endpoints and no cache. | Model-service investigation owner and provider contact | Obtain selected-model/API/SKU cache-boundary assurance, especially for SaaS tenants in one Azure subscription; then authorize appropriate validation. |
-| F02 | Session-to-model routing and response ownership | **Source-reviewed, locally tested, and patterns compared.** MAF returns results to the owning invocation; target selection is per call, not a persisted session-to-deployment binding. | Runtime and model-service owners | Decide whether sessions require sticky deployment/version or may use managed routing; validate the chosen live path across streams, retries and continuations. |
+| F02 | Session-to-model routing and response ownership | **Original runtime source-reviewed; standalone POC 06 live-validated for tenant/run ownership and two-turn continuations.** MAF's per-call target selection is unchanged. | Runtime and model-service owners | Qualify the actual HostedSkill integration, durable state, streams, retries and workflow continuations; decide production deployment/version stickiness. |
 | F03 | Runtime/MAF use of AzureWebJobsStorage | **Source and local unit validation complete.** The 95-case runtime selection covers storage/history and MAF execution. Transcript storage is separate from inference caches and uses agent/session paths without an explicit tenant segment. | Runtime/storage owner | Verify authenticated caller-to-session ownership and storage access in the deployed host; local tests do not establish that boundary. |
 | F04 | Foundry and runtime model optimization | **Research review complete; not benchmarked.** Cache controls, workload/SKU tradeoffs, model router, and Agent Optimizer examples are covered below. | Model optimization owner | Evaluate representative quality, token cost, throughput, and latency before selecting or enabling optimizations. |
 | F05 | Per-invocation/scheduled evaluation and quality score | **Usefulness assessment complete; no quality rollout.** Existing runtime Vally evaluation is relevant prior art; the POCs have no quality results. | Quality/evaluation owner | Agree datasets, evaluators, sampling, budgets, thresholds, and score interpretation; obtain real evaluation evidence. |
@@ -278,14 +367,15 @@ Authorization and correlation still need validation on every exposed surface.
 | Integration pattern under investigation | Session/state ownership and response association | Unresolved tradeoff |
 | --- | --- | --- |
 | Direct runtime calls to one shared Foundry/OpenAI deployment | Runtime retains the owning invocation and history context; each SDK response belongs to its request/stream. | Tenant authorization, storage scope, quotas, and whether a deployment/version must stay fixed across turns. |
-| Central model-service proxy | Caller and service both need an unambiguous owning request; asynchronous work must preserve tenant/session/invocation correlation. | Extra trust boundary, propagation, streaming/cancellation, retries and metering; not implemented here. |
+| Central model-service proxy | Caller and service both need an unambiguous owning request; asynchronous work must preserve tenant/session/invocation correlation. | POC 06 now implements a standalone nonstreaming submit/status/cancel contract; HostedSkill integration, durability and production qualification remain open. |
 | APIM in front of shared inference | Request/stream returns through the gateway; history generally remains with its existing owner unless a separate state feature is chosen. | Tenant-aware policy/cache keys and limits; backend load balancing alone is not session/deployment stickiness. |
 | Provider-managed Responses/agent state | Provider state identifiers supply continuity; the application must authorize every reference. | Service retention and the exact identity boundary differ from stateless model inference. |
 | Foundry model router or GitHub Fusion | Conversation ownership remains with the application/session, while underlying model selection may vary by request. | A stable router name is not an immutable underlying model/version or a quality guarantee. |
 
 The decision to investigate is **sticky deployment/version per conversation
 versus policy-controlled model changes with preserved, authorized history**.
-Neither strategy has been selected or implemented by this review. All nested
+The original review did not implement either strategy. POC 06 now fixes one
+deployment for its controlled pilot, without changing MAF routing. All nested
 tool/subagent calls, streams, workflow continuations, retries, and history reads
 must be included when qualifying the eventual choice.
 
@@ -393,7 +483,8 @@ These are tracked concerns, not completed tasks or an approved implementation.
   retry budget, authorization and idempotency policy; timeouts can leave an
   unknown side-effect outcome. Do not equate transport retries with input
   repair, auto-edit production, or bypass authentication/safety failures.
-  The current POCs only propagate errors; no such prototype is implemented.
+  The original mocks propagate errors; POC 06 adds quarantine/cancellation but
+  not this input-correction or durable recovery prototype.
 - **Differentiation and GA (C02):** [durable workflows][runtime-workflows] and
   selective agent-assisted recovery are hypotheses to validate with customers,
   not established differentiators. Agree representative customers/tasks,
@@ -665,8 +756,10 @@ retain their original optional dedicated-scenario setup. Before a live pilot:
    evidence, and measured model evaluation results. Only then change the status
    from local architecture experiment to cloud-validated POC.
 
-No Azure provisioning or execution was approved for this delivery.
-No GitHub model execution was approved either. A Fusion pilot additionally
+The original offline delivery did not approve Azure provisioning or execution.
+POC 06 was subsequently approved and validated as described above; it does not
+close the full HostedSkill qualification checklist. No GitHub model execution
+has been performed. A Fusion pilot additionally
 requires evidence of identity/organization billing and token rotation, live
 SDK/runtime Fusion selection, per-tier credit/quality/latency measurements,
 actual permission and storage isolation, and a decision on whether the service's
