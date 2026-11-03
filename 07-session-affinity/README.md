@@ -244,7 +244,7 @@ classic/v2 tier, not Consumption; selecting/deploying that tier is separate
 work. Disable response buffering on both APIM API surfaces and align deadlines.
 Streaming does not remove gateway/application limits. Do not copy the existing
 model-rewrite policy onto this service and overwrite its selected deployment.
-See the [streaming contract](../CONTRACT.md#41-streaming-request-and-response-sse).
+See the [streaming contract in the minimal design](../MINIMAL-DESIGN.md#streaming-contract-sse).
 
 ## Verification
 

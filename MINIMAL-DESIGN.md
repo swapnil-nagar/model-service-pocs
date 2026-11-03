@@ -49,6 +49,10 @@ during their binding window.
 For this version, a session belongs to **one agent**. Conversation-wide affinity
 across multiple agents is a future extension.
 
+**Storage performance and retention:** sub-millisecond binding lookup latency
+is not a requirement for this initial scope. Expiry is enforced on access,
+independently of physical cleanup; an optional batch cleanup job is future work.
+
 ## 3. Design
 
 ```mermaid
@@ -458,30 +462,105 @@ Response `model` is the concrete provider-reported model, not the public alias.
 Function-tool responses can have null text content and `tool_calls`. Preserve
 tool-call IDs and usage; absent usage means unknown consumption, not zero.
 
-**Streaming scenario:** use the same request and binding with `stream: true`;
-optionally request `stream_options: {"include_usage": true}` when supported by
-the provider. HTTP 200 returns `Content-Type: text/event-stream`. The runtime
-reads `data:` events incrementally through
+#### Streaming Contract (SSE)
+
+Use `POST {provider_base_url}/chat/completions` with the same customer bearer
+credential, unexpired binding, model alias, and runtime-owned context.
+The session is still pinned for 24 hours; streaming changes delivery, not model
+selection or context ownership.
+
+**Request:** `Content-Type: application/json`, with `stream: true`. When
+supported by the provider, request final usage with `stream_options.include_usage`:
+
+```json
+{
+  "model": "economy",
+  "messages": [
+    {"role": "user", "content": "Summarize this synthetic information."}
+  ],
+  "max_tokens": 128,
+  "stream": true,
+  "stream_options": {"include_usage": true},
+  "store": false
+}
+```
+
+**Success:** HTTP 200 with `Content-Type: text/event-stream`,
+`Cache-Control: no-store`, and `X-Model-Session-Expires-At`.
+Events return incrementally through
 Foundry -> APIM model API -> Model Service -> APIM customer API -> runtime.
-Successful completion ends in `data: [DONE]`. Tool-call deltas are assembled
-and authorized by the runtime, not executed by the service.
+Each SSE event ends with a blank line; an illustrative wire response is:
 
-The Model Service verifies the model before forwarding the first event.
-After headers/data have started, failure is an SSE error event without a
-successful `[DONE]`; HTTP status cannot be changed. A truncated stream or
-disconnect is not a completed answer, and provider usage may still be billed.
-Inference responses include the binding expiry in `X-Model-Session-Expires-At`.
+```text
+data: {"id":"chatcmpl-example","object":"chat.completion.chunk","created":1793716200,"model":"gpt-4.1-mini-2025-04-14","choices":[{"index":0,"delta":{"role":"assistant","content":"A concise"},"finish_reason":null}]}
 
-**Gateway and timeout boundary:** Microsoft documents long-running SSE on
-classic/v2 APIM tiers, not Consumption. Select and qualify a supported tier
-before offering customer streaming; this task does not change the existing
-APIM SKU. Disable `forward-request` response buffering, body logging, response
-cache, and body-inspecting/aggregating policies on both API surfaces.
-The service's default **25-second absolute deadline** still applies to SSE;
-the 24-hour binding is not a 24-hour connection. Configuration currently allows
-up to 120 seconds, subject to the gateway/caller path and capacity qualification.
-See the [streaming contract](CONTRACT.md#41-streaming-request-and-response-sse)
-and [Microsoft SSE guidance](https://learn.microsoft.com/en-us/azure/api-management/how-to-server-sent-events).
+data: {"id":"chatcmpl-example","object":"chat.completion.chunk","created":1793716200,"model":"gpt-4.1-mini-2025-04-14","choices":[{"index":0,"delta":{"content":" summary."},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-example","object":"chat.completion.chunk","created":1793716200,"model":"gpt-4.1-mini-2025-04-14","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}
+
+data: [DONE]
+
+```
+
+The Model Service validates the reported model before forwarding the first
+data event and checks later reported models. HTTP chunks can split SSE events;
+the runtime must parse event framing, not treat each chunk as one token/event.
+Text, function-tool deltas, and usage remain provider-compatible. The runtime
+assembles and authorizes complete tool calls; it must not execute partial
+arguments. Missing usage is unknown consumption, not zero.
+
+**Failure after streaming starts:** HTTP status cannot change after headers
+have been sent. A late failure emits a safe error event and no successful
+`[DONE]`, for example:
+
+```text
+data: {"error":{"code":"provider_stream_interrupted","type":"model_service_error","message":"provider_stream_interrupted"}}
+
+```
+
+An error event or EOF without `[DONE]` is a failed/partial outcome, not a complete
+answer. On caller disconnect or local cancellation, the service closes the
+upstream stream, but cannot promise rollback or zero provider cost.
+No token-stream replay, `Last-Event-ID` resume, automatic reconnect/retry,
+WebSocket, or mid-stream model fallback is supplied.
+
+**APIM requirements for both API surfaces:**
+
+1. Use a supported **classic/v2 APIM tier** for customer SSE. Microsoft does not
+   support long-running SSE on Consumption. No SKU change is performed here.
+2. Set `buffer-response="false"` on `forward-request` for the customer API and
+   the model-backend API; preserve SSE content type and relay events promptly.
+3. Disable response caching, request/response body logging, and policies that
+   inspect/aggregate/buffer the stream. Keep caller/provider credentials separate.
+4. Align caller, service, and gateway limits with headroom for both hops.
+   `forward-request timeout` controls waiting for backend headers, not an
+   unlimited total streaming lifetime.
+
+Illustrative backend policy on each supported-tier API, not a full API policy:
+
+```xml
+<backend>
+  <forward-request timeout="120" buffer-response="false" />
+</backend>
+```
+
+**Duration and limits:** the service's **25-second absolute inference/stream
+deadline** remains the default. Configuration permits
+`upstream_timeout_seconds` up to 120, subject to full-path qualification.
+The example gateway header timeout does not override the shorter application
+deadline or a tier's total limit. Longer-than-120-second application streaming
+needs a separate implementation/capacity review. Configured byte/output limits
+also apply; `max_prompt_tokens` is a client context-budget hint, not a financial
+quota. A 24-hour binding is not a 24-hour connection. A stream admitted before
+binding expiry can finish only within its bounded deadline; it cannot start
+another inference after expiry.
+
+**Qualification boundary:** local tests cover proxy SSE behavior; live
+two-hop APIM streaming, load, and runtime failure handling remain qualification
+work. The external MAF adapter is still pending; a Copilot SDK smoke does not
+prove MAF streaming. The complete contract above is self-contained;
+[CONTRACT.md](CONTRACT.md#41-streaming-request-and-response-sse) is an optional
+expanded reference.
 
 ### 6.3 Expiry, Errors, and Retries
 
@@ -551,6 +630,11 @@ with usage-based storage/operation charges and no separately provisioned
 in-memory instance. Atomic insert prevents concurrent first calls from
 selecting different models.
 
+**Low-latency/sub-millisecond lookup is not a requirement for this design.**
+We therefore do not need Redis solely to accelerate binding reads. Table
+Storage is chosen for durable routing correctness and usage-based cost, not
+because it is faster than Redis. Normal request/stream deadlines still apply.
+
 | Consideration | Azure Table Storage | Azure Managed Redis |
 | --- | --- | --- |
 | Initial fit | Durable key-based routing registry | Low-latency, high-throughput in-memory access |
@@ -606,21 +690,41 @@ Retail filters were `armRegionName=eastus2`, `currencyCode=USD`,
 Rates were retrieved directly from the public Retail Prices API, not inferred
 from a subscription bill.
 
+### How Is the 24-Hour Access Window Enforced?
+
+On creation, persist `expires_at = created_at + 24 hours` in UTC alongside
+the pinned model. For each new inference request, the service checks the
+stored expiry before calling the model:
+
+- If `now < expires_at`, the request is eligible to proceed with the original
+  model, subject to authentication, authorization, and other validations.
+- If `now >= expires_at`, reject it with **HTTP 410** and error code/message
+  **`session_expired`** ("request expired"); do not invoke the model or silently
+  create a new binding.
+
+The window is fixed, not extended by requests: do not add another 24 hours to
+`expires_at`. For example, a session created at 10:00 UTC on November 3 expires
+at 10:00 UTC on November 4, including at that exact instant. A request admitted
+before expiry may finish within its bounded inference/stream deadline.
+This controls admission, not guaranteed provider availability or completion
+before the binding expires.
+
 ### What Is Cleaned Up After 24 Hours?
 
-**Expiry and deletion are separate.** At `created_at + 24 hours`, the service
-rejects new session/inference use with 410. A request admitted before expiry
-may finish within its bounded deadline. No background job is required to
-enforce that access boundary.
+**Cleanup is not required to enforce the 24-hour access window.** Expiry and
+deletion are separate: the request-time check above rejects expired requests
+even while their rows remain in Table Storage. No cleanup job is required
+for this initial scope.
 
 **Current v1 behavior:** the full expired binding is retained as a tombstone.
 There is no automatic Table TTL, compaction, or cleanup job. Keeping the record
 prevents the same public session ID from being silently recreated with another
 model. Deleting its only record would allow recreation and break that contract.
 
-**Future physical cleanup:** add a separately approved retention policy and
-collector, with a versioned compact-tombstone schema and efficient expiry index
-or time buckets. Preserve a consumed-ID marker for as long as old IDs must
+**Optional batch cleanup:** a batch job can be created later to reduce retained
+data under a separately approved retention policy. Its timing does not control
+request expiry. It needs a versioned compact-tombstone schema and efficient
+expiry index or time buckets. Preserve a consumed-ID marker for as long as old IDs must
 remain unusable. Full deletion requires an explicit ID-generation/reuse policy
 that still rejects old IDs; do not simply purge every 24-hour row. The current
 record decoder requires a full binding, so stripping fields is not a supported
@@ -641,7 +745,7 @@ end-to-end streaming through the two APIM APIs still needs a supported
 classic/v2 tier and live/load qualification; the original Consumption,
 single-model POC is not that evidence.
 
-Use the [streaming contract](CONTRACT.md#41-streaming-request-and-response-sse)
+Use the [streaming contract above](#streaming-contract-sse)
 for the exact request, events, buffering/timeouts, and error semantics.
 There is no WebSocket protocol, token-stream replay, `Last-Event-ID` resume,
 automatic reconnect/retry, or switch to another model. A failed stream may

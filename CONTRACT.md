@@ -4,7 +4,8 @@
 
 **Scope:** the [minimal customer model-service design](MINIMAL-DESIGN.md).
 The [core contract is embedded in that design](MINIMAL-DESIGN.md#6-agent-runtime---model-service-contract);
-this document retains the expanded interface reference.
+the [complete streaming contract is also embedded there](MINIMAL-DESIGN.md#streaming-contract-sse).
+This document retains the expanded interface reference.
 This documents the implemented, locally tested routing API. The new service
 and Azure Table deployment are not yet live-qualified.
 The contract is runtime-neutral: **MAF / Copilot SDK** are alternative callers.
