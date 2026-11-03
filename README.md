@@ -21,6 +21,9 @@ unused Fusion runner or substituting another model.
 
 ## Integrated architecture design
 
+Start with [the minimal design](MINIMAL-DESIGN.md) for the problem, initial
+requirements, architecture, authentication/authorization, and future extensions.
+
 [DESIGN.md](DESIGN.md) explains the Functions Host, HostedSkill/MAF agent runtime,
 and shared model service in detail. It includes current and proposed architecture
 diagrams, tool/model request sequences, tenant identity and state ownership,
