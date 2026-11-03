@@ -141,27 +141,25 @@ The current FastAPI prototype needs a Functions HTTP adapter. See the
 
 ### Request flow
 
-**Session creation (architecture steps 1-2):**
-
-- Receive `POST /sessions` through APIM and authenticate the customer in the service.
-- Check permission for the requested agent/model alias and resolve a new
-  binding's alias to a configured endpoint.
-- Atomically create the 24-hour binding or retrieve the existing one without
-  changing its model or extending its expiry.
-- Return the session-specific **APIM customer-API URL** for the runtime's client
-  adapter. No provider inference is performed.
-
-**Later inference requests (architecture steps 1-4):**
-
-- Receive the request through APIM and authenticate/authorize again in the service.
-- Load the existing binding and check ownership, expiry, and pinned endpoint.
-- Forward runtime-packaged context through the APIM model API to that endpoint;
-  validate and return the response along the reverse path.
-
-Repeated creation with the same model returns the original binding and expiry.
-At expiry, return **410: session expired**; a new session ID is required.
-If the assigned endpoint is unavailable or changed, return an explicit error,
-not another model.
+1. **Start the session (architecture steps 1-2).**
+   - The agent sends `POST /sessions` through APIM with its customer key and
+     requested model.
+   - The Model Service checks access and creates or reads the session's fixed
+     24-hour model binding in Table Storage.
+   - It returns the session's APIM URL and settings. No model is called yet.
+   - Repeating the request with the same model keeps the original binding and
+     expiry.
+2. **Send a model request (architecture steps 1-4).**
+   - The agent sends the request and its context through APIM.
+   - The Model Service checks access and reads the session binding.
+   - If the session is missing, expired, or its endpoint is unavailable, the
+     service returns an error. It never picks a different model.
+3. **Return the answer.**
+   - For a valid session, the Model Service sends the request through APIM to
+     the pinned Foundry deployment.
+   - It checks the response model, then returns JSON or SSE to the agent.
+   - At expiry, the service returns **410: session expired**; the agent must
+     start a new session.
 
 ### Sequence: Session Binding and Pinned Inference
 
@@ -232,14 +230,6 @@ than a buffered complete answer. The Model Service validates model identity
 before forwarding the first data event and checks later reported models.
 The deployment must disable response buffering on both APIM API surfaces.
 
-**Deployment boundary:** [POC 06](06-shared-foundry-apim/README.md) already used
-APIM on both hops for one fixed model. The new routing service is locally
-tested as a standalone FastAPI proxy. Its Functions hosting adapter, APIM
-customer/model routes, protected backend ingress, and multi-endpoint policies
-remain deployment/integration work. The existing fixed-`chat` policy cannot be
-reused unchanged. The selected APIM
-tier's request limits still apply to JSON and streaming on the complete path.
-
 ## 4. Authentication: Who Is Calling?
 
 For the minimal version, use **one distinct API key per customer backend**.
@@ -254,8 +244,7 @@ For the minimal version, use **one distinct API key per customer backend**.
 Missing or invalid credentials return **401**.
 
 APIM-to-service access must be protected against direct gateway bypass; a plain
-tenant header is not gateway authentication. This backend protection is part of
-the pending APIM integration, not an already implemented property of POC 07.
+tenant header is not gateway authentication.
 
 For inference, the service authenticates separately to APIM's model API.
 APIM uses managed identity for Foundry, or the approved provider credential for
@@ -291,11 +280,10 @@ boundary is **customer-level**, not individual-user-level.
 
 ## 6. Agent Runtime - Model Service Contract
 
-The Agent Runtime (MAF / Copilot SDK) owns context preparation, framework-specific
-compaction, tool execution, and state persistence. Its client adapter translates
-framework messages/options to this HTTP contract. The service owns access checks
-and the model binding; it adds no history.
-Every protected request carries the customer bearer key described in section 4.
+MAF or Copilot SDK manages the conversation, context, tools, and runtime state.
+Its adapter calls this HTTP API. The Model Service checks access and keeps the
+model binding; it does not store chat history. Include the customer key with
+every request.
 
 ### 6.1 Create or Retrieve a Session Binding
 
