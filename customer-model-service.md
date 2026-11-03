@@ -2,12 +2,7 @@
 
 **Date:** 2026-11-03
 
-**Status:** the routing core and Copilot SDK caller path are locally tested.
-The diagrams target a separate Azure Function App behind APIM. The Functions
-hosting adapter and MAF adapter remain to be built; the new Azure Table/service
-and gateway deployment is not live-qualified.
-Shared-catalog access below is a design change; the prototype's customer
-allowlist checks have not yet been removed.
+**Status:** In Progress
 
 ## 1. Problem
 
