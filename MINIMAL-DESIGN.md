@@ -10,48 +10,44 @@ been smoke-tested locally. The MAF adapter remains integration work.
 
 ## 1. Problem
 
-Customers run agents through an **Agent Runtime (MAF / Copilot SDK)** and need
-access to several model endpoints.
+Customers running agents with **MAF / Copilot SDK** need access to multiple
+model endpoints. Each session must stay on the **same model/version for
+24 hours, even across Model Service restarts**.
 
-**Once a session selects a model, every request in that session must use the
-same model/version for 24 hours, even if the model-service worker restarts.**
-
-The selected runtime owns conversation state, context preparation, tool
-execution, and the agent flow. Compaction follows that framework's capabilities
-and configuration; Copilot SDK behavior is not assumed for MAF. The model
-service must not maintain a second conversation history.
-
-**Runtime choice:** Microsoft Agent Framework (MAF) is the default in the
-Functions Agent Runtime. Copilot SDK is an explicit app-level preview option.
-They are alternative execution harnesses, not two stacked agent loops.
+The runtime owns conversation context and tools; the Model Service owns
+routing and must not keep a second conversation history.
 
 ## 2. Requirements and Initial Scope
 
-The first version will:
+The Model Service must:
 
-1. Support multiple configured model endpoints.
-2. Authenticate customers and restrict which agents and models they can use.
-3. Persist one model binding per customer, agent, and session within the application.
-4. Keep that binding fixed for **24 hours from creation**, without sliding renewal.
-5. Forward runtime-packaged requests without adding history.
-6. Reject unauthorized, expired, or conflicting requests.
-7. Never silently substitute another model.
-8. Keep the service behind APIM / AI Gateway; do not expose an alternate public
-   inference path that bypasses gateway controls.
-9. Support JSON and SSE through the same pinned-session inference API.
-   Customer streaming requires a qualified APIM tier/configuration, not an
-   assumption that the existing Consumption pilot supports long-running SSE.
+1. Offer approved models and limit each customer to its allowed agents and models.
+2. Save each session's model and version by application, customer, agent, and
+   session for a fixed **24 hours**, including across service restarts.
+3. Check access and expiry on every request. Reject expired or conflicting
+   requests; never silently change the pinned model.
+4. Forward the context it receives without keeping a second conversation history.
+   The agent runtime owns conversation history and tools.
+5. Support JSON and streaming through the same session API. Streaming must use a
+   qualified APIM setup.
+6. Route all requests through APIM / AI Gateway, keeping customer and provider
+   credentials separate.
 
-**Boundary:** this provides routing consistency, not a guarantee of uninterrupted
-provider availability. Active model deployments must not be retired or upgraded
-during their binding window.
+### Out of Scope
 
-For this version, a session belongs to **one agent**. Conversation-wide affinity
-across multiple agents is a future extension.
+- Guaranteed model availability or automatic switching to another model.
+- Keeping the same model across multiple agents in one conversation.
+- A guaranteed sub-millisecond session lookup.
+- Automatic cleanup of expired bindings. A batch job may be added later.
 
-**Storage performance and retention:** sub-millisecond binding lookup latency
-is not a requirement for this initial scope. Expiry is enforced on access,
-independently of physical cleanup; an optional batch cleanup job is future work.
+### Assumptions
+
+- Each session belongs to one agent.
+- A model deployment is not retired or upgraded while an active 24-hour binding
+  uses it.
+- The service checks expiry when a request arrives; deleting the stored record
+  is not needed to reject an expired request. Any future cleanup must prevent
+  old session IDs from being silently reused.
 
 ## 3. Design
 
