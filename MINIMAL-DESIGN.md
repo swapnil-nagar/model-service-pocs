@@ -218,8 +218,8 @@ sequenceDiagram
     Note over GW: Customer API routes to service, model API routes to provider
     AGENT->>GW: POST /sessions + customer bearer key
     GW->>SVC: Customer API preserves credential over protected connection
-    SVC->>SVC: Authenticate customer and validate shared-catalog model choice
-    Note over GW,SVC: Invalid credentials return 401; unknown new model returns 422
+    SVC->>SVC: Authenticate customer and authorize agent/model
+    Note over GW,SVC: Failed authentication/authorization stops with 401/403
     SVC->>DB: Atomically create or read scoped binding
     DB-->>SVC: Winning endpoint/version and fixed expiry
     SVC->>SVC: Check alias conflict and expiry, never overwrite binding
@@ -233,7 +233,7 @@ sequenceDiagram
         SVC->>SVC: Authenticate and authorize the owning session
         SVC->>DB: Read existing binding
         DB-->>SVC: Pinned endpoint/version and expiry, or not found
-        alt Missing, expired, or unavailable binding
+        alt Missing, expired, or blocked binding
             SVC-->>GW: Explicit 404 / 410 / 503, no model call
             GW-->>AGENT: Return error, never substitute a model
         else Valid authorized binding
