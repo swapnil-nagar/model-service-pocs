@@ -511,6 +511,14 @@ correction or exactly-once external execution.
 
 ## 8. API and adapter contracts
 
+The initial implemented runtime/service interface is specified in
+[CONTRACT.md](CONTRACT.md), with concrete session/inference examples,
+authentication, fixed-lifetime semantics, and failure handling.
+The contract targets **Agent Runtime (MAF / Copilot SDK)** as alternatives:
+MAF remains the default and Copilot is explicitly selected. Framework-specific
+context, compaction, and persistence stay with the caller; the local native
+smoke validates Copilot, not the still-pending external MAF adapter.
+
 ### 8.1 Existing POC surfaces
 
 | Surface | Current contract | Ownership |

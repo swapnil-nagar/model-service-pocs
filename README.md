@@ -23,6 +23,10 @@ unused Fusion runner or substituting another model.
 
 Start with [the minimal design](MINIMAL-DESIGN.md) for the problem, initial
 requirements, architecture, authentication/authorization, and future extensions.
+It uses **Agent Runtime (MAF / Copilot SDK)**: MAF is the Functions runtime
+default, while Copilot SDK is an explicit preview option.
+The [runtime-to-model-service contract](CONTRACT.md) specifies the session and
+inference APIs, runtime responsibilities, authentication, expiry, and errors.
 
 [DESIGN.md](DESIGN.md) explains the Functions Host, HostedSkill/MAF agent runtime,
 and shared model service in detail. It includes current and proposed architecture
