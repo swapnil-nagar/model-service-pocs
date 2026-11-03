@@ -20,28 +20,27 @@ routing and must not keep a second conversation history.
 
 The Model Service must:
 
-1. Offer approved models and limit each customer to its allowed agents and models.
-2. Save each session's model and version by application, customer, agent, and
+1. Each session's model and version by application, customer, agent, and
    session for a fixed **24 hours**, including across service restarts.
-3. Check access and expiry on every request. Reject expired or conflicting
+2. Check access and expiry on every request. Reject expired or conflicting
    requests; never silently change the pinned model.
-4. Forward the context it receives without keeping a second conversation history.
+3. Forward the context it receives without keeping a second conversation history.
    The agent runtime owns conversation history and tools.
-5. Support JSON and streaming through the same session API. Streaming must use a
+4. Support JSON and streaming through the same session API. Streaming must use a
    qualified APIM setup.
-6. Route all requests through APIM / AI Gateway, keeping customer and provider
+5. Route all requests through APIM / AI Gateway, keeping customer and provider
    credentials separate.
 
 ### Out of Scope
 
-- Guaranteed model availability or automatic switching to another model.
+- Automatic switching to another model.
 - Keeping the same model across multiple agents in one conversation.
 - A guaranteed sub-millisecond session lookup.
 - Automatic cleanup of expired bindings. A batch job may be added later.
 
 ### Assumptions
 
-- Each session belongs to one agent.
+- **Each session belongs to one agent**.
 - A model deployment is not retired or upgraded while an active 24-hour binding
   uses it.
 - The service checks expiry when a request arrives; deleting the stored record
