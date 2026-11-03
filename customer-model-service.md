@@ -1,4 +1,4 @@
-# Minimal Design: Customer Model Service
+# Customer Model Service
 
 **Date:** 2026-11-03
 
