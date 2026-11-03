@@ -239,9 +239,12 @@ input-token/financial budget remains future governance work.
 - There is no durable agent queue or transcript in this service.
 
 APIM Consumption's existing 30-second ceiling and policy limitations still
-apply if that tier is selected for a future deployment. Streaming does not
-remove that ceiling. Do not copy the existing model-rewrite policy onto this
-service and accidentally overwrite its selected deployment.
+apply to that pilot. Microsoft's customer SSE guidance requires a supported
+classic/v2 tier, not Consumption; selecting/deploying that tier is separate
+work. Disable response buffering on both APIM API surfaces and align deadlines.
+Streaming does not remove gateway/application limits. Do not copy the existing
+model-rewrite policy onto this service and overwrite its selected deployment.
+See the [streaming contract](../CONTRACT.md#41-streaming-request-and-response-sse).
 
 ## Verification
 

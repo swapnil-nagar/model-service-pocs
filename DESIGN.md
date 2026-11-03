@@ -1045,6 +1045,15 @@ remove the limit on an individual model request. Streaming, long reasoning, or
 slow provider calls need explicit qualification and potentially a different
 gateway/transport choice.
 
+The [customer SSE contract](CONTRACT.md#41-streaming-request-and-response-sse)
+requires a supported classic/v2 APIM tier, immediate chunk relay on both API
+surfaces, and no response-body logging/caching. Microsoft's SSE guidance does
+not qualify Consumption for long-running streams. The proxy's 25-second
+default absolute deadline remains in effect; configuration currently permits
+up to 120 seconds, not unlimited streaming. The
+[minimal-design FAQ](MINIMAL-DESIGN.md#8-faq-storage-cost-cleanup-and-streaming)
+separates local support from live qualification and logical expiry from cleanup.
+
 ### 14.2 Failure policy
 
 | Failure | Required action | Do not do |

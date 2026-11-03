@@ -38,6 +38,9 @@ The first version will:
 7. Never silently substitute another model.
 8. Keep the service behind APIM / AI Gateway; do not expose an alternate public
    inference path that bypasses gateway controls.
+9. Support JSON and SSE through the same pinned-session inference API.
+   Customer streaming requires a qualified APIM tier/configuration, not an
+   assumption that the existing Consumption pilot supports long-running SSE.
 
 **Boundary:** this provides routing consistency, not a guarantee of uninterrupted
 provider availability. Active model deployments must not be retired or upgraded
@@ -279,6 +282,11 @@ architecture hops rather than using the same numbering scheme.
 Numbers 14-15 and 16-23 describe alternative branches, not successive model
 attempts. Authentication/authorization failures stop earlier with 401/403.
 
+For streaming, messages 19-20 and 22-23 carry incremental SSE events rather
+than a buffered complete answer. The Model Service validates model identity
+before forwarding the first data event and checks later reported models.
+The deployment must disable response buffering on both APIM API surfaces.
+
 **Deployment boundary:** [POC 06](06-shared-foundry-apim/README.md) already used
 APIM on both hops for one fixed model. The new routing service is locally
 tested as a standalone proxy. Its APIM customer/model routes, protected backend
@@ -450,10 +458,30 @@ Response `model` is the concrete provider-reported model, not the public alias.
 Function-tool responses can have null text content and `tool_calls`. Preserve
 tool-call IDs and usage; absent usage means unknown consumption, not zero.
 
-**Streaming:** set `stream: true`. HTTP 200 returns SSE `data:` events, ending
-in `[DONE]` on success. A later failure emits an error event without a successful
-`[DONE]`; the runtime must not treat a partial stream as a completed answer.
+**Streaming scenario:** use the same request and binding with `stream: true`;
+optionally request `stream_options: {"include_usage": true}` when supported by
+the provider. HTTP 200 returns `Content-Type: text/event-stream`. The runtime
+reads `data:` events incrementally through
+Foundry -> APIM model API -> Model Service -> APIM customer API -> runtime.
+Successful completion ends in `data: [DONE]`. Tool-call deltas are assembled
+and authorized by the runtime, not executed by the service.
+
+The Model Service verifies the model before forwarding the first event.
+After headers/data have started, failure is an SSE error event without a
+successful `[DONE]`; HTTP status cannot be changed. A truncated stream or
+disconnect is not a completed answer, and provider usage may still be billed.
 Inference responses include the binding expiry in `X-Model-Session-Expires-At`.
+
+**Gateway and timeout boundary:** Microsoft documents long-running SSE on
+classic/v2 APIM tiers, not Consumption. Select and qualify a supported tier
+before offering customer streaming; this task does not change the existing
+APIM SKU. Disable `forward-request` response buffering, body logging, response
+cache, and body-inspecting/aggregating policies on both API surfaces.
+The service's default **25-second absolute deadline** still applies to SSE;
+the 24-hour binding is not a 24-hour connection. Configuration currently allows
+up to 120 seconds, subject to the gateway/caller path and capacity qualification.
+See the [streaming contract](CONTRACT.md#41-streaming-request-and-response-sse)
+and [Microsoft SSE guidance](https://learn.microsoft.com/en-us/azure/api-management/how-to-server-sent-events).
 
 ### 6.3 Expiry, Errors, and Retries
 
@@ -511,3 +539,116 @@ unqualified. This document does not authorize a deployment or new paid model cal
 
 **In one sentence:** the Agent Runtime (MAF / Copilot SDK) owns the conversation;
 our service owns customer access and the durable 24-hour model assignment.
+
+## 8. FAQ: Storage, Cost, Cleanup, and Streaming
+
+### Why Azure Table Storage Rather Than Redis?
+
+The binding is small routing metadata, written once and point-read by its
+customer/agent/session key. We need an authoritative record that survives
+service restarts, not another conversation cache. Table Storage supplies that
+with usage-based storage/operation charges and no separately provisioned
+in-memory instance. Atomic insert prevents concurrent first calls from
+selecting different models.
+
+| Consideration | Azure Table Storage | Azure Managed Redis |
+| --- | --- | --- |
+| Initial fit | Durable key-based routing registry | Low-latency, high-throughput in-memory access |
+| Billing shape | Stored GB plus operations | Provisioned node hours, even while idle |
+| 24-hour expiry | Application checks `expires_at`; no automatic entity TTL deletion | Key TTL is available, but expiration/eviction must not silently recreate an existing binding |
+| Recovery | Storage redundancy and recovery design still matter | Redis can be authoritative, but needs appropriate HA, persistence, eviction, and recovery controls |
+| Current implementation | Azure Table adapter and SQLite local adapter | No Redis adapter or cache is implemented |
+
+Redis is not inherently wrong or incapable of persistence. Its performance may
+justify the cost at scale, but that must be measured. A future Redis cache can
+sit in front of Table Storage; a cache miss must read the authoritative binding,
+not select a new model. No comparative latency benchmark or production
+availability equivalence is claimed here.
+
+### What Would the Storage Cost Be?
+
+**Illustrative public PAYG rates checked 2026-11-03: East US 2, USD.**
+Use one representative month with **1 billable GB average stored,
+1,000,000 total point reads, and 100,000 individual create writes**.
+Reads include registration/status/inference lookups. Redis examples use
+**Balanced B3 (3 GB), 730 hours**, with one versus two billed nodes.
+
+| Option | Rates used | Illustrative monthly baseline |
+| --- | --- | ---: |
+| Table, Standard LRS / service-scoped encryption key | $0.045/GB-month; $0.00036 per 10,000 reads or writes | **$0.0846 (~$0.08)** |
+| Table, Account Encrypted LRS | $0.045/GB-month; $0.005/10,000 reads; $0.025/10,000 writes | **$0.795 (~$0.80)** |
+| Table, Account Encrypted ZRS | $0.0562/GB-month; $0.005/10,000 reads; $0.025/10,000 writes | **$0.8062 (~$0.81)** |
+| Azure Managed Redis B3, one node / non-HA | $0.065/node-hour x 730 | **$47.45** |
+| Azure Managed Redis B3, two nodes / HA | $0.065/node-hour x 730 x 2 | **$94.90** |
+
+For example, Account Encrypted LRS is
+`1 x $0.045 + (1,000,000 / 10,000) x $0.005 + (100,000 / 10,000) x $0.025`.
+The Table encryption/key scope changes transaction rates; do not assume the
+cheapest row applies to every account. Redis API prices are per node; HA is
+not the one-node development price. Persistence requires an eligible HA setup.
+
+These are **storage/compute baselines, not the total model-service bill or an
+equivalent sizing/SLA comparison**. LRS, ZRS, and Redis HA have different
+failure/performance characteristics; Redis needs memory headroom. Excludes
+additional scans/lists, cleanup work, replication/persistence configuration,
+networking, APIM, Container Apps, model tokens, support, tax, discounts, and
+free grants. Retained metadata grows unless a separate retention policy is
+implemented; 1 GB is an example average, not a forever-fixed footprint.
+No Redis resource or Table account was provisioned for this comparison.
+
+Sources: [Table pricing](https://azure.microsoft.com/en-us/pricing/details/storage/tables/),
+[Managed Redis pricing](https://azure.microsoft.com/en-us/pricing/details/managed-redis/),
+[Azure Retail Prices API](https://prices.azure.com/api/retail/prices),
+and [Redis node calculation rules](https://github.com/AzureManagedRedis/amr-migration-skill/blob/main/references/pricing-tiers.md).
+Retail filters were `armRegionName=eastus2`, `currencyCode=USD`,
+`priceType=Consumption`, product `Tables` with the listed SKUs, and service
+`Redis Cache`, product `Azure Managed Redis - Balanced`, SKU `B3`.
+Rates were retrieved directly from the public Retail Prices API, not inferred
+from a subscription bill.
+
+### What Is Cleaned Up After 24 Hours?
+
+**Expiry and deletion are separate.** At `created_at + 24 hours`, the service
+rejects new session/inference use with 410. A request admitted before expiry
+may finish within its bounded deadline. No background job is required to
+enforce that access boundary.
+
+**Current v1 behavior:** the full expired binding is retained as a tombstone.
+There is no automatic Table TTL, compaction, or cleanup job. Keeping the record
+prevents the same public session ID from being silently recreated with another
+model. Deleting its only record would allow recreation and break that contract.
+
+**Future physical cleanup:** add a separately approved retention policy and
+collector, with a versioned compact-tombstone schema and efficient expiry index
+or time buckets. Preserve a consumed-ID marker for as long as old IDs must
+remain unusable. Full deletion requires an explicit ID-generation/reuse policy
+that still rejects old IDs; do not simply purge every 24-hour row. The current
+record decoder requires a full binding, so stripping fields is not a supported
+manual cleanup operation. Avoid frequent whole-table scans under the current
+hashed-key layout. This collector/schema change is not implemented here.
+
+Do not delete the shared Foundry deployment, APIM instance, storage account,
+or provider credentials when one session expires. SDK history, files, tools,
+and telemetry have separate owners/retention policies; the routing service
+does not store or automatically purge them.
+
+### Can Customers Stream Responses?
+
+**Yes at the service API: JSON and SSE use the same 24-hour binding.**
+The local proxy/tests cover fragmented chunks, tool deltas, usage, model
+mismatch, truncation, timeout, and disconnect cleanup. Customer-facing
+end-to-end streaming through the two APIM APIs still needs a supported
+classic/v2 tier and live/load qualification; the original Consumption,
+single-model POC is not that evidence.
+
+Use the [streaming contract](CONTRACT.md#41-streaming-request-and-response-sse)
+for the exact request, events, buffering/timeouts, and error semantics.
+There is no WebSocket protocol, token-stream replay, `Last-Event-ID` resume,
+automatic reconnect/retry, or switch to another model. A failed stream may
+have incurred tokens; missing final usage remains unknown rather than zero.
+
+Further guidance:
+[Table design patterns](https://learn.microsoft.com/en-us/azure/storage/tables/table-storage-design-patterns),
+[Redis persistence](https://learn.microsoft.com/en-us/azure/redis/how-to-persistence),
+[APIM SSE configuration](https://learn.microsoft.com/en-us/azure/api-management/how-to-server-sent-events),
+and [forward-request buffering](https://learn.microsoft.com/en-us/azure/api-management/forward-request-policy).

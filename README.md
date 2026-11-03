@@ -27,6 +27,10 @@ It uses **Agent Runtime (MAF / Copilot SDK)**: MAF is the Functions runtime
 default, while Copilot SDK is an explicit preview option.
 The [runtime-to-model-service contract](CONTRACT.md) specifies the session and
 inference APIs, runtime responsibilities, authentication, expiry, and errors.
+The [design FAQ](MINIMAL-DESIGN.md#8-faq-storage-cost-cleanup-and-streaming)
+compares Table Storage/Redis costs and explains expiry/cleanup; the
+[streaming contract](CONTRACT.md#41-streaming-request-and-response-sse) defines
+SSE events, gateway requirements, timeouts, and partial failures.
 
 [DESIGN.md](DESIGN.md) explains the Functions Host, HostedSkill/MAF agent runtime,
 and shared model service in detail. It includes current and proposed architecture

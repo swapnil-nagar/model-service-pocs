@@ -182,15 +182,100 @@ Function-tool responses can have null text content and `tool_calls`. Preserve
 tool-call IDs, finish reasons, and usage. Usage may be absent; absence does not
 mean zero consumption.
 
-**Streaming success:** HTTP 200 with `Content-Type: text/event-stream`;
-OpenAI-compatible `data:` events, ending in `data: [DONE]`.
-The service validates model identity before the first data event. A later
-failure emits an explicit error event without a successful `[DONE]`; HTTP status
-cannot change after streaming starts. The runtime must treat that as a failed
-or partial outcome, not a completed answer.
+### 4.1 Streaming Request and Response (SSE)
 
-Inference responses include `X-Model-Session-Expires-At` and `Cache-Control:
-no-store`. Configured byte/output limits and an absolute inference deadline
+Use the same session-scoped endpoint, customer bearer credential, model alias,
+and complete runtime-owned context. Send `stream: true`; when supported by the
+provider, request a final usage event with `stream_options.include_usage`.
+
+```json
+{
+  "model": "economy",
+  "messages": [
+    {"role": "user", "content": "Summarize this synthetic information."}
+  ],
+  "max_tokens": 128,
+  "stream": true,
+  "stream_options": {"include_usage": true},
+  "store": false
+}
+```
+
+Success starts with HTTP 200 and `Content-Type: text/event-stream`.
+An illustrative wire stream is below; **each event ends with a blank line**:
+
+```text
+data: {"id":"chatcmpl-example","object":"chat.completion.chunk","created":1793716200,"model":"gpt-4.1-mini-2025-04-14","choices":[{"index":0,"delta":{"role":"assistant","content":"A concise"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-example","object":"chat.completion.chunk","created":1793716200,"model":"gpt-4.1-mini-2025-04-14","choices":[{"index":0,"delta":{"content":" summary."},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-example","object":"chat.completion.chunk","created":1793716200,"model":"gpt-4.1-mini-2025-04-14","choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}
+
+data: [DONE]
+
+```
+
+The server validates the reported model before forwarding the first data event
+and checks any later reported models. SSE framing can span HTTP chunks; the
+runtime must parse events, not assume a chunk equals one token/event.
+Forward text/function-tool deltas and reported usage without adding history.
+The runtime assembles and authorizes complete tool calls; it must not execute
+partial arguments. Usage can be absent, especially on disconnect.
+
+After headers/data have started, HTTP status cannot change. A late failure
+emits a safe error event and **no successful `[DONE]`**, for example:
+
+```text
+data: {"error":{"code":"provider_stream_interrupted","type":"model_service_error","message":"provider_stream_interrupted"}}
+
+```
+
+An error event or EOF without `[DONE]` is a failed/partial outcome, not a complete
+answer. The service closes the upstream stream when local work is cancelled
+or the caller disconnects, but cannot promise rollback or zero provider cost.
+No token-stream replay, `Last-Event-ID` resume, automatic reconnect/retry,
+WebSocket, or mid-stream model fallback is supplied by this contract.
+
+### 4.2 Gateway and Duration Requirements
+
+For the intended two-hop APIM path:
+
+1. Use a supported **classic/v2 APIM tier** for customer SSE. Microsoft does not
+   support long-running SSE connections on Consumption. No SKU upgrade or new
+   streaming deployment is performed by this documentation change.
+2. Set `buffer-response="false"` on `forward-request` for **both** the customer
+   API and model-backend API. Preserve SSE content type and relay events promptly.
+3. Disable response caching, request/response body logging, and policies that
+   read/aggregate/buffer the stream. Keep caller/provider credentials separate.
+4. Align caller, service, and gateway limits with headroom for both hops.
+   `forward-request timeout` controls waiting for backend headers, not an
+   unlimited total streaming lifetime.
+
+Illustrative backend policy on each supported-tier API, not a full API policy:
+
+```xml
+<backend>
+  <forward-request timeout="120" buffer-response="false" />
+</backend>
+```
+
+The service still has a **25-second absolute inference/stream deadline by
+default**. Current configuration allows `upstream_timeout_seconds` up to 120;
+qualify the full path before increasing it. The example gateway header timeout
+does not override the shorter application deadline or a tier's total limit.
+Longer-than-120-second application streaming requires a separate implementation
+and capacity review. A 24-hour model binding does not mean a 24-hour connection.
+Admission before binding expiry permits completion only within the configured
+deadline, not a new inference call after expiry.
+
+Local tests validate the proxy's SSE behavior; **live two-hop APIM streaming,
+load, and runtime failure handling remain qualification work**. MAF needs its
+own adapter validation; a Copilot SDK smoke is not proof of MAF streaming.
+See [APIM SSE guidance](https://learn.microsoft.com/en-us/azure/api-management/how-to-server-sent-events)
+and [forward-request semantics](https://learn.microsoft.com/en-us/azure/api-management/forward-request-policy).
+
+Inference responses include `X-Model-Session-Expires-At` and `Cache-Control: no-store`.
+Configured byte/output limits and an absolute inference deadline
 apply; the default deadline is 25 seconds. `max_prompt_tokens` is a client
 context-budget hint whose use must be qualified for the selected framework,
 not a server-enforced token or financial quota.
