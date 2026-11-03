@@ -28,7 +28,8 @@ default, while Copilot SDK is an explicit preview option.
 The [runtime-to-model-service contract](CONTRACT.md) specifies the session and
 inference APIs, runtime responsibilities, authentication, expiry, and errors.
 The [design FAQ](MINIMAL-DESIGN.md#8-faq-storage-cost-cleanup-and-streaming)
-compares Table Storage/Redis costs and explains expiry/cleanup; the
+compares Function Apps/Container Apps and Table Storage/Redis, and explains
+low-traffic cost goals, backend replacement through APIM, and expiry/cleanup. The
 [streaming contract within the minimal design](MINIMAL-DESIGN.md#streaming-contract-sse) defines
 SSE events, gateway requirements, timeouts, and partial failures.
 
@@ -49,10 +50,13 @@ Azure Table Storage is the hosted registry; SQLite supports local verification.
 There is no second transcript, sliding renewal, silent model change or fallback.
 JSON, function-tool messages and SSE are supported.
 
-The code and local/native-SDK tests are implemented; the new service/table have
-**not** been deployed or tested against live Azure. The existing POC 06 image,
-routes and recorded paid results are unchanged. See the guide for configuration,
-expiry behavior, SDK setup and the limits of the availability guarantee.
+The planned host is a separate Azure Function App, with on-demand Flex
+Consumption proposed for low initial traffic. The routing core and
+local/native-SDK tests are implemented; the Functions HTTP hosting adapter is
+not. The new service/table/APIM routes have **not** been deployed or tested
+against live Azure. The existing POC 06 image, routes and recorded paid results
+are unchanged. See the guide for configuration, expiry behavior, SDK setup and
+the limits of the availability guarantee.
 
 ## Investigation scope
 

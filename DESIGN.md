@@ -17,6 +17,13 @@ Azure Table Storage with a SQLite local-test adapter and a fixed, non-sliding
 extension. Details are in [section 12.5](#125-implemented-24-hour-session-affinity)
 and the [POC 07 guide](07-session-affinity/README.md).
 
+**Hosting decision (2026-11-03):** the new routing service targets a separate
+Azure Function App, with on-demand Flex Consumption proposed to limit initial
+low-traffic COGS. APIM keeps its public contract stable if hosting later moves
+to Container Apps. The Functions HTTP adapter and hosted JSON/SSE qualification
+remain pending; the original live Container Apps runner is unchanged.
+See the [hosting comparison](MINIMAL-DESIGN.md#why-start-with-functions-instead-of-container-apps).
+
 **Audience:** Hosted Skills platform, Functions host, agent runtime,
 model-service, identity, storage, and operations owners.
 
@@ -350,11 +357,12 @@ flowchart TB
     MS -.-> OBS
 ```
 
-The model service is a **logical boundary**, not a requirement to add another
-microservice for every responsibility. Reuse APIM policies for supported
-authentication/routing controls. Add a small policy/control service only if
-cross-instance budgets, entitlement lookup, or other requirements cannot be
-correctly expressed at the gateway. Such a service is not currently deployed.
+The model service is a **logical boundary**, not a separate microservice for
+every responsibility. The initial session router targets one separate
+Function App behind APIM; catalog, access checks, binding logic, and forwarding
+remain inside that application. Reuse APIM policies for supported gateway
+controls. The Functions HTTP adapter still needs to be built; the new
+Function App is not deployed.
 
 ### 6.2 Choose one canonical history owner
 
@@ -845,6 +853,11 @@ The implementation is a separate opt-in entry point,
 [routing policy/contracts](live_pocs/routing.py) and
 [registry adapters](live_pocs/routing_storage.py). It preserves the legacy
 [POC 06 application](live_pocs/app.py) unchanged.
+
+The standalone FastAPI entry point is the local prototype, not a Functions
+deployment artifact. The planned Function App must preserve this same contract
+and shared bindings through a new HTTP adapter; JSON/SSE and cold-start behavior
+need live qualification. See the [minimal hosting design](MINIMAL-DESIGN.md#why-start-with-functions-instead-of-container-apps).
 
 ```mermaid
 flowchart LR

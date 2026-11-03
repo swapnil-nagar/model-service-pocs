@@ -6,8 +6,10 @@
 The [core contract is embedded in that design](MINIMAL-DESIGN.md#6-agent-runtime---model-service-contract);
 the [complete streaming contract is also embedded there](MINIMAL-DESIGN.md#streaming-contract-sse).
 This document retains the expanded interface reference.
-This documents the implemented, locally tested routing API. The new service
-and Azure Table deployment are not yet live-qualified.
+This documents the implemented, locally tested standalone routing API.
+The design now targets a separate Azure Function App; its HTTP hosting adapter
+is not implemented. Function-hosted JSON/SSE behavior and the new service,
+gateway, and Azure Table deployment are not yet live-qualified.
 The contract is runtime-neutral: **MAF / Copilot SDK** are alternative callers.
 MAF is the Functions runtime default; Copilot SDK is an explicit preview option.
 Only the Copilot SDK client path has a local native smoke test; the external

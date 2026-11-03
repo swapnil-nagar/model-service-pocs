@@ -2,11 +2,10 @@
 
 **Date:** 2026-11-03
 
-**Status:** initial scope aligned with the locally tested session-routing
-implementation. The diagrams show the intended APIM-integrated deployment;
-the new Azure Table/service and gateway integration are not yet live-qualified.
-The contract targets MAF / Copilot SDK; only the Copilot SDK client path has
-been smoke-tested locally. The MAF adapter remains integration work.
+**Status:** the routing core and Copilot SDK caller path are locally tested.
+The diagrams target a separate Azure Function App behind APIM. The Functions
+hosting adapter and MAF adapter remain to be built; the new Azure Table/service
+and gateway deployment is not live-qualified.
 
 ## 1. Problem
 
@@ -55,7 +54,7 @@ The Model Service must:
 flowchart TB
     AGENT["Agent application<br/>Functions Host / customer backend<br/>MAF / Copilot SDK"]
     APIM["APIM AI Gateway<br/>one instance with customer and model APIs"]
-    SERVICE["Model Service<br/>one FastAPI application<br/>on Azure Container Apps"]
+    SERVICE["Model Service<br/>separate Azure Function App"]
     REGISTRY[("Azure Table Storage<br/>24-hour session bindings")]
     MODEL["Microsoft Foundry model deployment<br/>pinned deployment/version"]
 
@@ -103,96 +102,42 @@ the model API honors the pinned target instead of reselecting a deployment.
 
 | Component | Responsibility | Scope |
 | --- | --- | --- |
-| Agent application / Functions Host | Starts step 1 through its runtime client adapter. Runs MAF / Copilot SDK and owns conversation context, tools, and runtime state. | Existing caller; client adapter required |
-| APIM AI Gateway - one instance | Receives step 1, forwards step 2 to the service, and handles steps 3-4 through its separate model API. Provides applicable limits, protected access, and provider authentication. | Managed resource reused; policies in scope |
-| Model Service - one Container App | One FastAPI application performs the checks/binding lookup in step 2, makes the pinned call in step 3, and validates the returning model response. Its internal responsibilities are listed below. | Custom application in scope |
-| Azure Table Storage | The service reads or atomically creates routing metadata during step 2. State survives application-replica restarts; it contains no conversation transcript. | External store; binding schema/access in scope |
-| Microsoft Foundry model deployment | Receives step 4, performs inference with the pinned deployment/version, and returns a model response and usage when available. | Managed inference backend |
+| Agent application / Functions Host | Runs MAF or Copilot SDK; owns conversation context, tools, and runtime state. | Existing caller; adapter required |
+| APIM AI Gateway - one instance | Customer and model APIs provide access controls, limits, and provider authentication. | Reused resource; policy integration pending |
+| Model Service - separate Function App | Python HTTP handlers check access, pin sessions, forward JSON/SSE, and validate responses. | Planned host; routing core locally tested |
+| Azure Table Storage | Atomically saves model bindings across restarts; stores no conversation history. | Shared external store; schema/access in scope |
+| Microsoft Foundry model deployment | Runs the pinned model/version; returns output and usage when supplied. | Managed inference backend |
 
 ### Selected Model Endpoint: Microsoft Foundry
 
-The selected endpoint is a **model deployment inside a Microsoft Foundry
-resource**, not another Container App, Function, or agent runtime.
+The endpoint is a **model deployment inside a Microsoft Foundry resource**:
 
-| Azure resource | Type | Purpose |
-| --- | --- | --- |
-| Foundry resource | `Microsoft.CognitiveServices/accounts`, kind `AIServices` | Provides the managed model inference endpoint |
-| Model deployment | `Microsoft.CognitiveServices/accounts/deployments` | Configures the concrete model, version, deployment type, and capacity |
+- **Resource:** `Microsoft.CognitiveServices/accounts` (`AIServices`) provides the endpoint.
+- **Deployment:** `Microsoft.CognitiveServices/accounts/deployments` sets the model, version, deployment type, and capacity.
 
-A Foundry resource can contain several deployments. Different models can
-share the account endpoint; the inference request's `model` field selects a
-**deployment name**, not the customer-facing alias:
+The Model Service replaces the public alias with the pinned deployment name.
+APIM calls Foundry using managed identity, not the customer's key.
 
-```text
-Foundry resource
-  -> mini-v1       -> approved model A / fixed version
-  -> standard-v1   -> approved model B / fixed version
-```
+Foundry runs inference and returns JSON/SSE through APIM and the Model Service.
+The Model Service does not host model weights or GPUs; tools stay with the runtime.
 
-In the original POC, `ai-modelpoc-dev-e8d5` contains
-`chat-modelpoc-dev-e8d5`, using `gpt-4.1-mini` version `2025-04-14`,
-GlobalStandard capacity 3. This is the recorded pilot baseline, not a
-recommendation to adopt a Legacy model version for production.
-See the [Foundry module](infra/live/modules/foundry.bicep) and
-[public parameters](infra/live/main.parameters.json).
-
-**Inference at architecture step 4:**
-
-- The runtime prepares context; the Model Service resolves the session's
-  pinned deployment and sends it through APIM's model API.
-- APIM permits that target and uses its managed identity with the required
-  Foundry inference role. Customer credentials are not sent to Foundry.
-- Foundry operates the model-serving compute, processes the messages, and
-  generates the response. Our Container App does not load model weights or
-  run GPU inference.
-- Response/model/usage information returns through APIM to the Model Service
-  for validation, then through the customer API to the runtime. Tool execution
-  remains with MAF / Copilot SDK; further model calls use the same binding.
-
-An illustrative APIM-to-Foundry request is:
-
-```http
-POST https://<foundry-endpoint>/openai/v1/chat/completions
-Content-Type: application/json
-
-{"model":"chat-modelpoc-dev-e8d5","messages":[{"role":"user","content":"Summarize this information."}],"max_tokens":128,"store":false}
-```
-
-The 24-hour binding pins the deployment/version, not a physical GPU or
-provider KV cache. Keep that deployment available and unchanged while bindings
-are active; publish a new version under a new deployment name for new sessions.
-The existing template uses `versionUpgradeOption: NoAutoUpgrade`. Provider
-retirement, quota, and availability still require operational management.
-GlobalStandard is a global processing deployment type; an East US 2 resource
-does not guarantee East US 2-only inference.
+The 24-hour binding pins the deployment/version, not dedicated hardware or
+cached conversation state. Keep the deployment unchanged while bindings are active.
+See the [Foundry FAQ](#how-is-the-foundry-endpoint-configured) for examples,
+pilot settings, upgrades, and region limits.
 
 ### Inside the Model Service Application
 
-These are code/configuration responsibilities **inside the same application**,
-not independently deployed services:
+One Python **Function App**, separate from the agent's Function App:
 
-| Internal responsibility | Implementation |
-| --- | --- |
-| Endpoint catalog and customer agent/model policy | Validated JSON configuration loaded at startup; secrets supplied separately |
-| Customer authentication and authorization | Request checks against customer credentials, grants, session ownership, and expiry |
-| Session API and 24-hour router | FastAPI handlers and routing logic; atomic binding persistence through the Table Storage adapter |
-| Stateless JSON/SSE inference proxy | Async HTTP forwarding to the approved APIM model API; no transcript or tool execution |
+- **Catalog:** startup-validated JSON for endpoints and customer permissions; secrets supplied separately.
+- **Access:** authenticate callers; check permissions, session ownership, and expiry.
+- **Router:** atomically create/read fixed 24-hour bindings in Table Storage.
+- **Proxy:** forward JSON/SSE through APIM; no transcript storage or tool execution.
 
-Deploy one Python/FastAPI application on **Azure Container Apps**, separate
-from the agent's Functions Host. Multiple replicas can run the same application
-and compatible catalog while sharing the external binding table. Replicas are
-not additional logical services. SDK/framework state still belongs to the caller.
-
-The registry stores routing metadata only:
-
-```text
-Customer + Agent + Session
-    -> Endpoint + Model version + Created time + Expiry
-```
-
-The application namespace separates applications. No prompts, conversation
-history, tool outputs, or credential values are stored in the routing registry.
-Runtime-state persistence and resume remain the caller's responsibility.
+The current FastAPI prototype needs a Functions HTTP adapter. See the
+[hosting comparison](#why-start-with-functions-instead-of-container-apps) and
+[state FAQ](#how-do-function-app-instances-share-state).
 
 ### Request flow
 
@@ -228,7 +173,7 @@ sequenceDiagram
     autonumber
     participant AGENT as Agent application (MAF / Copilot SDK)
     participant GW as APIM AI Gateway (one instance)
-    participant SVC as Model Service (one Container App)
+    participant SVC as Model Service (separate Function App)
     participant DB as Azure Table Storage
     participant MODEL as Foundry model deployment
 
@@ -289,9 +234,10 @@ The deployment must disable response buffering on both APIM API surfaces.
 
 **Deployment boundary:** [POC 06](06-shared-foundry-apim/README.md) already used
 APIM on both hops for one fixed model. The new routing service is locally
-tested as a standalone proxy. Its APIM customer/model routes, protected backend
-ingress, and multi-endpoint policies remain deployment/integration work; the
-existing fixed-`chat` policy cannot be reused unchanged. The selected APIM
+tested as a standalone FastAPI proxy. Its Functions hosting adapter, APIM
+customer/model routes, protected backend ingress, and multi-endpoint policies
+remain deployment/integration work. The existing fixed-`chat` policy cannot be
+reused unchanged. The selected APIM
 tier's request limits still apply to JSON and streaming on the complete path.
 
 ## 4. Authentication: Who Is Calling?
@@ -551,10 +497,10 @@ quota. A 24-hour binding is not a 24-hour connection. A stream admitted before
 binding expiry can finish only within its bounded deadline; it cannot start
 another inference after expiry.
 
-**Qualification boundary:** local tests cover proxy SSE behavior; live
-two-hop APIM streaming, load, and runtime failure handling remain qualification
-work. The external MAF adapter is still pending; a Copilot SDK smoke does not
-prove MAF streaming. The complete contract above is self-contained;
+**Qualification boundary:** local tests cover proxy SSE behavior; the Functions
+hosting adapter, live two-hop APIM streaming, load, and runtime failure handling
+remain qualification work. The external MAF adapter is still pending;
+a Copilot SDK smoke does not prove MAF streaming. The complete contract above is self-contained;
 [CONTRACT.md](CONTRACT.md#41-streaming-request-and-response-sse) is an optional
 expanded reference.
 
@@ -608,14 +554,99 @@ These are not required for the initial routing contract:
 - [Example endpoint/customer catalog](07-session-affinity/config.example.json)
 - [Detailed architecture and qualification boundaries](DESIGN.md)
 
-The routing implementation and Copilot SDK client path are locally tested;
-the MAF adapter and new Azure Table/service/gateway deployment remain
-unqualified. This document does not authorize a deployment or new paid model calls.
+The routing core and Copilot SDK client path are locally tested. The Functions
+hosting adapter and MAF adapter are not implemented; the new Azure
+Table/service/gateway deployment remains unqualified. This document does not
+authorize a deployment or new paid model calls.
 
 **In one sentence:** the Agent Runtime (MAF / Copilot SDK) owns the conversation;
 our service owns customer access and the durable 24-hour model assignment.
 
 ## 8. FAQ: Storage, Cost, Cleanup, and Streaming
+
+### Why start with Functions instead of Container Apps?
+
+**We expect low traffic and want to keep COGS (the cost of running the service)
+low while we learn.** Start with a separate Function App. The proposed plan is
+**Flex Consumption, on demand, with no always-ready instances initially**.
+Compute can scale to zero when idle; execution and resource use drive its bill.
+We accept cold starts initially, but still need to meet caller timeouts.
+
+| Consideration | Function App: initial choice | Container Apps: future option |
+| --- | --- | --- |
+| Low, uneven traffic | On-demand compute suits the initial cost goal | Consumption hosting can also scale to zero |
+| Existing code | Reuse the routing core; a Functions HTTP adapter is still needed | Runs the FastAPI container directly |
+| JSON and streaming | Supported with a compatible Python HTTP streaming setup; validate every endpoint | FastAPI handles both; APIM still needs streaming configuration |
+| Growing traffic | Measure cost, concurrency, and cold starts before changing plans | Consider when measured load or operations justify it |
+
+This is a cost strategy, **not proof that Functions is always cheaper**.
+Total COGS also includes APIM, Table and Functions host/deployment storage,
+monitoring, networking, and model tokens. Customer SSE still requires a supported
+classic/v2 APIM tier; the existing Consumption pilot is not enough.
+Python HTTP streams require compatible streaming-enabled HTTP functions in the
+same Function App; an ordinary ASGI wrapper is not streaming qualification.
+See [Flex Consumption](https://learn.microsoft.com/en-us/azure/azure-functions/flex-consumption-plan),
+[billing](https://learn.microsoft.com/en-us/azure/azure-functions/functions-consumption-costs#consumption-based-costs),
+and [Python HTTP streams](https://learn.microsoft.com/en-us/azure/azure-functions/functions-bindings-http-webhook-trigger?pivots=programming-language-python#http-streams).
+
+### Can we change the hosting later without changing customer code?
+
+**Yes, if we keep the API contract unchanged.** Customers call APIM, not the
+Function App directly. Later, we can host the service in Container Apps and
+change APIM's protected backend while keeping the public URL, routes,
+authentication, JSON/SSE responses, and errors the same.
+
+Keep the same application namespace, compatible catalog, and shared Table
+bindings so existing sessions retain their pinned model and expiry. Validate
+identity permissions, networking, timeouts, streaming, and rollout/draining
+before switching. APIM makes replacement easier for customers; it does not
+make migration automatic or guarantee zero downtime.
+
+### How is the Foundry endpoint configured?
+
+One resource can hold several named deployments, such as `mini-v1` and
+`standard-v1`, each with an approved model/version and capacity. The provider
+request's `model` field uses a deployment name, not the public alias `economy`.
+APIM supplies its managed-identity token and needs the required Foundry
+inference role. A simplified request is:
+
+```http
+POST https://<foundry-endpoint>/openai/v1/chat/completions
+Content-Type: application/json
+
+{"model":"chat-modelpoc-dev-e8d5","messages":[{"role":"user","content":"Summarize this information."}],"max_tokens":128,"store":false}
+```
+
+**Recorded pilot:** resource `ai-modelpoc-dev-e8d5`, deployment
+`chat-modelpoc-dev-e8d5`, model `gpt-4.1-mini` version `2025-04-14`,
+GlobalStandard capacity 3. This Legacy pilot baseline is not a production
+model recommendation. See the [Foundry module](infra/live/modules/foundry.bicep)
+and [public parameters](infra/live/main.parameters.json).
+
+### What about model upgrades and processing regions?
+
+- Keep a pinned deployment/version unchanged while bindings are active.
+  Use a new deployment name for upgrades and new sessions.
+- The template uses `versionUpgradeOption: NoAutoUpgrade`. Provider retirement,
+  quota, and outages still need planning; the setting is not a promise of
+  permanent availability. See [model upgrade guidance](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/working-with-models#model-deployment-upgrade-configuration).
+- GlobalStandard can process requests globally. An East US 2 resource does
+  not guarantee East US 2-only inference.
+
+### How do Function App instances share state?
+
+Scaled-out Function App workers use compatible catalogs and one shared binding
+table. No binding depends on a worker staying alive for 24 hours. The registry
+stores only:
+
+```text
+Application + Customer + Agent + Session
+    -> Endpoint + Model version + Created time + Expiry
+```
+
+It stores no prompts, conversation history, tool outputs, or credential values.
+The runtime stores and restores its own conversation state. A binding reserves
+neither a physical GPU nor the provider's context cache.
 
 ### Why use Table Storage instead of Redis?
 
@@ -636,14 +667,14 @@ Redis can also be durable when configured for it; it is not inherently unsafe.
 These are illustrative East US 2 USD rates checked 2026-11-03: 1 GB average
 stored, 1 million reads, 100,000 writes, and 730 hours for Redis. Encryption
 choice changes Table transaction prices. This is not a full service bill or an
-equal-size/availability comparison; it excludes APIM, Container Apps, model
+equal-size/availability comparison; it excludes APIM, Function App hosting, model
 tokens, tax, and discounts. See [Table pricing](https://azure.microsoft.com/en-us/pricing/details/storage/tables/),
 [Managed Redis pricing](https://azure.microsoft.com/en-us/pricing/details/managed-redis/),
 and [Redis persistence](https://learn.microsoft.com/en-us/azure/redis/how-to-persistence).
 
 ### How do four streaming requests stay separate?
 
-All four sessions may use the **same Foundry deployment**. Each request still
+All four requests may use the **same Foundry deployment**. Each request still
 has its own context and its own response stream:
 
 | Request | Customer/session | Context sent by the agent | Its own stream returns |

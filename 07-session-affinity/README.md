@@ -5,6 +5,11 @@ model service with multiple approved model endpoints, fixed 24-hour session
 bindings, and an OpenAI Chat Completions interface usable by the pinned
 Copilot SDK. It does not change or redeploy the existing POC 06 runner.
 
+**Planned host:** a separate Azure Function App, with on-demand Flex Consumption
+proposed for low initial COGS. The current FastAPI app is a local prototype;
+the Functions HTTP adapter is not implemented, and hosted JSON/SSE is not qualified.
+See the [hosting comparison](../MINIMAL-DESIGN.md#why-start-with-functions-instead-of-container-apps).
+
 The Azure Table Storage adapter is implemented and tested against SDK-shaped
 fakes. Real SDK client construction/cleanup was checked without Azure requests.
 SQLite verifies persistence, cross-process reads, and concurrent binding
@@ -139,8 +144,9 @@ Before hosting:
 4. Only for explicit local Azure development, set `development_credential=true`
    to use `DefaultAzureCredential`. There is no production fallback to it.
 5. Supply customer and provider credentials through the hosted secret mechanism.
-6. Deploy this routing entry point, configure its HTTPS ingress, and verify
-   backend protocol, reported model names, limits, and access controls.
+6. Before hosted rollout, implement the Functions HTTP adapter and qualify
+   JSON/SSE, cold starts, deadlines, authentication, and pinned-model checks.
+   The local FastAPI entry point is not a Functions deployment artifact.
 
 Table reads/writes use deterministic tenant/session keys. Creation uses
 `create_entity`, never upsert: a conflicting creator reads the winning row.
@@ -155,7 +161,9 @@ The existing [POC 06 infrastructure](../infra/live/main.bicep) does not provisio
 this table, deploy this entry point, or expose these routes. The existing
 [Dockerfile](../Dockerfile.live) includes the new modules/dependencies, but its
 default command intentionally still starts the legacy runner. A separately
-reviewed deployment must select `live_pocs.routing_app:app`.
+reviewed standalone container deployment would select `live_pocs.routing_app:app`;
+that image is not the planned Function App host. Functions deployment
+configuration and its HTTP adapter remain pending.
 
 ## Copilot SDK configuration
 
