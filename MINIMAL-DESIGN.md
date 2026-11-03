@@ -285,6 +285,12 @@ Its adapter calls this HTTP API. The Model Service checks access and keeps the
 model binding; it does not store chat history. Include the customer key with
 every request.
 
+**Agent Runtime change required:** Add an adapter that creates or resumes the
+binding, configures a per-session model client with the returned
+`provider_base_url` and model alias, sends the customer key on every request,
+and handles **410** without switching models. Restore conversation state in
+the runtime. No SDK changes are required.
+
 ### 6.1 Create or Retrieve a Session Binding
 
 | API | Result |
