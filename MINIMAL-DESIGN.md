@@ -6,6 +6,8 @@
 The diagrams target a separate Azure Function App behind APIM. The Functions
 hosting adapter and MAF adapter remain to be built; the new Azure Table/service
 and gateway deployment is not live-qualified.
+Shared-catalog access below is a design change; the prototype's customer
+allowlist checks have not yet been removed.
 
 ## 1. Problem
 
@@ -17,6 +19,9 @@ The runtime owns conversation context and tools; the Model Service owns
 routing and must not keep a second conversation history.
 
 ## 2. Requirements and Initial Scope
+
+All authenticated customers can choose any model in the shared catalog when
+starting a session. Customer-specific access rules and quotas are future work.
 
 The Model Service must:
 
@@ -37,6 +42,7 @@ The Model Service must:
 - Keeping the same model across multiple agents in one conversation.
 - A guaranteed sub-millisecond session lookup.
 - Automatic cleanup of expired bindings. A batch job may be added later.
+- Customer-specific model/agent policies, traffic quotas, and spending budgets.
 
 ### Assumptions
 
@@ -83,7 +89,7 @@ The numbers on the architecture arrows describe these request hops:
 | Step | Components involved | What happens |
 | --- | --- | --- |
 | **1. Session / inference request** | Agent application -> APIM customer API | The MAF / Copilot SDK caller sends either a session-binding request or a model request with runtime-packaged context, its customer bearer key, and the session reference. |
-| **2. Customer API forwards** | APIM -> Model Service | APIM preserves the customer credential over the protected backend connection. The service authenticates the customer, checks agent/model permissions, and creates or reads the scoped binding in Azure Table Storage. Inference requires an existing, unexpired binding. |
+| **2. Customer API forwards** | APIM -> Model Service | APIM preserves the customer credential over the protected backend connection. The service authenticates the customer, validates new model choices against the shared catalog, and creates or reads the customer-scoped binding in Azure Table Storage. Inference requires an existing, unexpired binding. |
 | **3. Model API call** | Model Service -> the same APIM instance | For inference only, the service forwards the context with the server-selected pinned target and a separate service-to-gateway credential. It does not choose another model for an existing session. |
 | **4. Provider inference** | APIM model API -> selected model endpoint | APIM authenticates the service, permits the approved target, and calls the pinned deployment using gateway-owned provider authentication. The customer's bearer key is not sent to the model provider. |
 
@@ -129,8 +135,8 @@ pilot settings, upgrades, and region limits.
 
 One Python **Function App**, separate from the agent's Function App:
 
-- **Catalog:** startup-validated JSON for endpoints and customer permissions; secrets supplied separately.
-- **Access:** authenticate callers; check permissions, session ownership, and expiry.
+- **Catalog:** startup-validated JSON for the shared model list; secrets supplied separately.
+- **Access:** authenticate callers; check session ownership, expiry, and pinned model.
 - **Router:** atomically create/read fixed 24-hour bindings in Table Storage.
 - **Proxy:** forward JSON/SSE through APIM; no transcript storage or tool execution.
 
@@ -140,11 +146,15 @@ The current FastAPI prototype needs a Functions HTTP adapter. See the
 
 ### Model List Configuration
 
-Reuse the operator-controlled [model catalog](07-session-affinity/config.example.json):
+Reuse the `endpoints` and `models` sections of the operator-controlled
+[model catalog](07-session-affinity/config.example.json):
 
 - **`endpoints`:** approved deployments, model versions, URLs, and secret references.
 - **`models`:** public model names mapped to endpoint IDs.
-- **`customers.allowed_models`:** models each customer may use.
+
+The same model list is available to every authenticated customer. Customer
+credential mappings still identify callers; per-customer model grants are not
+part of this design.
 
 For example, the model-list portion is:
 
@@ -159,8 +169,8 @@ For example, the model-list portion is:
 
 This is an excerpt; the linked file contains the full configuration.
 Add endpoints to expand the list. To retire an endpoint, point its aliases to
-an approved replacement for **new sessions**, then keep the old endpoint and
-permissions until its last binding expires and accepted requests finish.
+an approved replacement for **new sessions**, then keep the old endpoint until
+its last binding expires and accepted requests finish.
 Do not edit an active endpoint in place.
 
 Configuration loads at startup, not automatically on file changes. Roll out a
@@ -208,8 +218,8 @@ sequenceDiagram
     Note over GW: Customer API routes to service, model API routes to provider
     AGENT->>GW: POST /sessions + customer bearer key
     GW->>SVC: Customer API preserves credential over protected connection
-    SVC->>SVC: Authenticate customer and authorize agent/model
-    Note over GW,SVC: Failed authentication/authorization stops with 401/403
+    SVC->>SVC: Authenticate customer and validate shared-catalog model choice
+    Note over GW,SVC: Invalid credentials return 401; unknown new model returns 422
     SVC->>DB: Atomically create or read scoped binding
     DB-->>SVC: Winning endpoint/version and fixed expiry
     SVC->>SVC: Check alias conflict and expiry, never overwrite binding
@@ -223,7 +233,7 @@ sequenceDiagram
         SVC->>SVC: Authenticate and authorize the owning session
         SVC->>DB: Read existing binding
         DB-->>SVC: Pinned endpoint/version and expiry, or not found
-        alt Missing, expired, or blocked binding
+        alt Missing, expired, or unavailable binding
             SVC-->>GW: Explicit 404 / 410 / 503, no model call
             GW-->>AGENT: Return error, never substitute a model
         else Valid authorized binding
@@ -247,13 +257,14 @@ architecture hops rather than using the same numbering scheme.
 
 | Sequence numbers | Meaning |
 | --- | --- |
-| **1-8** | Create or retrieve the session binding: authenticate, authorize, atomically access the table, and return client settings or an explicit error. No model call occurs. |
+| **1-8** | Create or retrieve the session binding: authenticate, check the shared catalog for new bindings, atomically access the table, and return client settings or an explicit error. No model call occurs. |
 | **9-13** | Receive a subsequent inference request, repeat access checks, and read its existing model binding. |
-| **14-15** | Failure alternative: return a missing/expired/blocked-binding error without contacting a model. |
+| **14-15** | Failure alternative: return a missing/expired/unavailable-binding error without contacting a model. |
 | **16-23** | Valid-binding alternative: call the pinned provider through APIM, validate the response in the Model Service, and return JSON/SSE to the owning caller. |
 
 Numbers 14-15 and 16-23 describe alternative branches, not successive model
-attempts. Authentication/authorization failures stop earlier with 401/403.
+attempts. Invalid credentials stop earlier with 401; an unknown model for a
+new binding returns 422.
 
 For streaming, messages 19-20 and 22-23 carry incremental SSE events rather
 than a buffered complete answer. The Model Service validates model identity
@@ -283,23 +294,21 @@ provider. Azure Table access uses the service's managed identity.
 
 ## 5. Authorization: What Can This Caller Access?
 
-Maintain a small customer policy:
-
-| Customer | Allowed agents | Allowed models |
-| --- | --- | --- |
-| Customer A | Assistant | Economy, Quality |
-| Customer B | Assistant | Economy |
+**Every authenticated customer can use the shared model catalog.** There is no
+per-customer model or agent policy in this version. Choosing a model still pins
+that session to its selected deployment/version for 24 hours.
 
 For every operation, verify:
 
-- The customer may use the requested agent and model.
 - The binding belongs to that customer.
 - The binding has not expired.
-- The requested model matches the binding.
+- Any requested model matches the existing binding.
+
+For a new session, check that the requested model exists in the shared catalog.
 
 | Condition | Response |
 | --- | --- |
-| Model or agent not permitted | **403** |
+| New session requests a model outside the shared catalog | **422** |
 | Session absent under that customer | **404** |
 | Attempt to change the session's model | **409** |
 | Session expired | **410** |
@@ -327,7 +336,7 @@ the runtime. No SDK changes are required.
 | --- | --- |
 | `POST /sessions` | 201 for a new binding; 200 for the same existing binding |
 | `GET /sessions/{agent_id}/{session_id}` | Owning, unexpired binding metadata |
-| `GET /sessions/{agent_id}/{session_id}/v1/models` | The session's one allowed model alias |
+| `GET /sessions/{agent_id}/{session_id}/v1/models` | The session's pinned model alias, not the full catalog |
 
 `POST /sessions`, with `Content-Type: application/json`:
 
@@ -563,12 +572,14 @@ API. [CONTRACT.md](CONTRACT.md) retains the expanded field and failure reference
 
 These are not required for the initial routing contract:
 
+- **Customer policies:** per-customer model/agent access rules, request/token
+  quotas, concurrent-request limits, spending budgets, and policy management.
 - **Entra ID/workload authentication**, per-user permissions, and richer
   credential lifecycle management.
 - **Cost-aware admission routing:** choose the cheapest qualified model when
   creating a session, then preserve its 24-hour binding.
 - Same-model failover, capacity management, and availability objectives.
-- Shared token budgets, billing attribution, and detailed usage reconciliation.
+- Billing attribution and detailed usage reconciliation.
 - Additional provider protocols and cross-agent affinity.
 
 ## Implementation References
@@ -790,10 +801,10 @@ The existing session returns an error, not another model. The customer may wait
 while the binding is valid or explicitly start a new session using an available,
 approved model.
 
-Use the [model catalog](#model-list-configuration) to add replacements and
-change alias mappings for new sessions. Keep old endpoint definitions and
-customer alias permissions until their last bindings expire and accepted
-requests finish. Removing permissions also blocks existing sessions.
+Use the shared [model catalog](#model-list-configuration) to add replacements
+and change alias mappings for new sessions. Every authenticated customer sees
+the same choices. Keep old endpoint definitions until their last bindings
+expire and accepted requests finish.
 Start the drain window after all workers use the revised catalog; older workers
 may still create bindings to the old endpoint during rollout.
 Allow 24 hours from the last old binding's creation, plus time for accepted
@@ -804,11 +815,11 @@ binding. A per-model pause switch is not implemented.
 
 #### How do we stop one customer using everyone else's capacity?
 
-Before production, add per-customer request limits, concurrent-stream limits,
-and token-budget admission checks based on verified customer identity, not a
-caller-supplied header. Keep overall capacity headroom. These shared controls
-are proposed, not implemented by this POC. Shared capacity is not reserved per
-customer; a guaranteed allocation needs separate qualification.
+**Per-customer traffic policies are a future feature.** Initially, customers
+share the model catalog and provider capacity without individual quotas.
+Service-wide safety limits and provider limits still apply. Keep capacity
+headroom and monitor traffic, but do not promise fairness or reserved capacity:
+one customer's load can affect others. See [Future Extensions](#7-future-extensions).
 
 #### Should the next session keep the conversation after 24 hours?
 
@@ -824,9 +835,9 @@ does not copy or store that history.
 Record one usage entry per provider attempt, linked to the customer and session;
 do not double-count the two gateway hops. Use reported usage when available.
 Otherwise, mark cost as **estimated or unknown**, never zero. Observed output
-may miss tokens the provider generated after disconnect. Reserve a conservative
-budget and reconcile where provider records allow; exact per-session costs
-may remain unavailable. Agree estimated-usage billing with customers first.
+may miss tokens the provider generated after disconnect. Reconcile where
+provider records allow; exact per-session costs may remain unavailable.
+Customer budget enforcement and billing policies are future work.
 
 #### What if customers require data residency or dedicated compute?
 
