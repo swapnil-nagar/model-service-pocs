@@ -139,6 +139,37 @@ The current FastAPI prototype needs a Functions HTTP adapter. See the
 [hosting comparison](#why-start-with-functions-instead-of-container-apps) and
 [state FAQ](#how-do-function-app-instances-share-state).
 
+### Model List Configuration
+
+Reuse the operator-controlled [model catalog](07-session-affinity/config.example.json):
+
+- **`endpoints`:** approved deployments, model versions, URLs, and secret references.
+- **`models`:** public model names mapped to endpoint IDs.
+- **`customers.allowed_models`:** models each customer may use.
+
+For example, the model-list portion is:
+
+```json
+{
+  "models": {
+    "economy": "mini-20250414",
+    "quality": "standard-20250414"
+  }
+}
+```
+
+This is an excerpt; the linked file contains the full configuration.
+Add endpoints to expand the list. To retire an endpoint, point its aliases to
+an approved replacement for **new sessions**, then keep the old endpoint and
+permissions until its last binding expires and accepted requests finish.
+Do not edit an active endpoint in place.
+
+Configuration loads at startup, not automatically on file changes. Roll out a
+compatible catalog to every worker before counting the drain window.
+This changes routing choices, not Foundry capacity; it does not add autoscaling,
+health-based failover, or model switching for existing sessions.
+See the [model-outage FAQ](#what-if-a-pinned-model-is-unavailable-for-hours).
+
 ### Request flow
 
 1. **Start the session (architecture steps 1-2).**
@@ -715,6 +746,98 @@ automatic delete job today. A future batch job could reduce stored data, but
 must preserve protection against reusing old session IDs. It must not delete
 Foundry, APIM, or shared credentials. Conversation history and telemetry have
 their own storage and cleanup rules.
+
+### Isolation and access
+
+#### How do we keep users within the same customer separate?
+
+**The customer key does not identify individual users.** The Agent Runtime must
+authenticate each user and check session ownership before loading history,
+documents, or tool results, or calling the Model Service. Keep the key in the
+backend, not the browser. Model Service enforcement of user ownership would
+need a verified user identity or session-scoped credential; that is future work.
+
+#### What if two requests arrive for the same session?
+
+The Agent Runtime must allow one active turn per session and queue or reject
+overlapping turns. Coordinate across runtime instances and use history revision
+checks to prevent stale writes. Tool operations need stable operation IDs and
+downstream deduplication or reconciliation. Atomic model binding creation does
+not order history or guarantee exactly-once tool actions.
+
+### Streaming and reliability
+
+#### Which APIM tier will we use, and how do we test streaming?
+
+**The SKU is not final.** Basic v2 is a candidate; networking and cost needs may
+require another supported tier. Consumption is not supported for long-running
+SSE. On both API surfaces, disable response buffering, response caching, and
+body logging. Send timestamped test events at regular intervals and verify
+arrival times against a forwarding-delay limit, rather than receiving a burst
+at the end. Test each hop and the full Functions path under load. This remains
+qualification work; see [Microsoft's SSE guidance](https://learn.microsoft.com/en-us/azure/api-management/how-to-server-sent-events).
+
+#### What if a stream stops halfway? Is retry safe?
+
+Show **"Response interrupted"** and mark received text as partial. An error
+event or EOF without `[DONE]` is not success. Do not execute partial tool calls
+or automatically replay the request. A retry may incur another model charge;
+check and deduplicate any tool actions already performed. Our own request ID
+does not make the provider's inference idempotent.
+
+#### What if a pinned model is unavailable for hours?
+
+The existing session returns an error, not another model. The customer may wait
+while the binding is valid or explicitly start a new session using an available,
+approved model.
+
+Use the [model catalog](#model-list-configuration) to add replacements and
+change alias mappings for new sessions. Keep old endpoint definitions and
+customer alias permissions until their last bindings expire and accepted
+requests finish. Removing permissions also blocks existing sessions.
+Start the drain window after all workers use the revised catalog; older workers
+may still create bindings to the old endpoint during rollout.
+Allow 24 hours from the last old binding's creation, plus time for accepted
+requests to finish. Catalog changes do not repair an outage or move an existing
+binding. A per-model pause switch is not implemented.
+
+### Scale and governance
+
+#### How do we stop one customer using everyone else's capacity?
+
+Before production, add per-customer request limits, concurrent-stream limits,
+and token-budget admission checks based on verified customer identity, not a
+caller-supplied header. Keep overall capacity headroom. These shared controls
+are proposed, not implemented by this POC. Shared capacity is not reserved per
+customer; a guaranteed allocation needs separate qualification.
+
+#### Should the next session keep the conversation after 24 hours?
+
+A new routing binding is required; an empty conversation is not. Offer an
+explicit **"Continue conversation"** choice as the recommended runtime behavior.
+The runtime can carry authorized
+history or a summary into the new session, after checking the new model's
+context limits and capabilities. Otherwise, start fresh. The Model Service
+does not copy or store that history.
+
+#### How do we assign cost when a stream ends before usage arrives?
+
+Record one usage entry per provider attempt, linked to the customer and session;
+do not double-count the two gateway hops. Use reported usage when available.
+Otherwise, mark cost as **estimated or unknown**, never zero. Observed output
+may miss tokens the provider generated after disconnect. Reserve a conservative
+budget and reconcile where provider records allow; exact per-session costs
+may remain unavailable. Agree estimated-usage billing with customers first.
+
+#### What if customers require data residency or dedicated compute?
+
+Confirm these needs before onboarding. GlobalStandard may process globally;
+the account's region does not promise regional-only inference. Select and
+verify suitable regional or Data Zone options where available. Include runtime
+history, documents, and telemetry in the residency review. Private networking
+and provisioned throughput do not by themselves guarantee dedicated physical
+hardware. Stricter requirements may rule out the initial shared deployment.
+See [Foundry deployment options](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/deployment-types#choose-the-right-deployment-type).
 
 Further guidance: [Table design patterns](https://learn.microsoft.com/en-us/azure/storage/tables/table-storage-design-patterns),
 [APIM SSE](https://learn.microsoft.com/en-us/azure/api-management/how-to-server-sent-events),
