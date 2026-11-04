@@ -21,6 +21,29 @@ unused Fusion runner or substituting another model.
 
 ## Integrated architecture design
 
+### New stateless inference designs (2026-11-04)
+
+The following two POCs are **design-only**, with no implementation, deployment,
+or new live results:
+
+| POC | Model selection | Context and tool execution |
+| --- | --- | --- |
+| [08: stateless AI Gateway](08-stateless-ai-gateway/README.md) | Customer selects an approved model alias through APIM | Customer / Hosted Skills runtime |
+| [09: stateless Model Router](09-stateless-model-router/README.md) | APIM forwards to Foundry Model Router for automatic selection | Customer / Hosted Skills runtime |
+
+Both accept customer-provided context and function-tool schemas. The model
+returns tool-call requests; the customer runtime validates/executes the tools and
+submits their results on the next inference call. Neither APIM nor Model Router
+replaces that agent loop. No separate orchestration service is proposed.
+See the [shared API examples](08-stateless-ai-gateway/contract-examples.md).
+
+**There is no 24-hour pinning requirement for POCs 08 and 09.** The session APIs,
+binding store, and expiry rules in POC 07 and older design documents are a
+separate experiment, not prerequisites for these new stateless designs.
+The existing default runner and test commands do not execute POCs 08 or 09.
+
+### Earlier integrated/session-affinity design
+
 Start with [the minimal design](MINIMAL-DESIGN.md) for the problem, initial
 requirements, architecture, authentication/authorization, and future extensions.
 It uses **Agent Runtime (MAF / Copilot SDK)**: MAF is the Functions runtime
