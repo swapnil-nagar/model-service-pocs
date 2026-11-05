@@ -91,17 +91,68 @@ binding registry, or Redis conversation/session store in the baseline.
 
 ## 2. Problem, requirements, and deliberate changes from the source
 
-### 2.1 Problem to solve
+### 2.1 Problem statement
 
-Customers running agents with MAF or Copilot SDK need a governed way to use
-multiple models without integrating and holding credentials for each model
-endpoint. They need ordinary chat, incremental streaming, and model-generated
-tool calls while their runtime remains responsible for context and tools.
+Customers running agents with MAF or Copilot SDK need a single, governed way to
+access model inference without integrating with and holding credentials for
+multiple model endpoints. Their agent-runtime must remain in control of
+conversation context, customer data, and tools, while the model service
+provides ordinary chat, incremental streaming, and model-generated tool-call
+requests.
 
-POC 09 solves this with **service-owned automatic model selection per request**,
-not a durable assignment of a customer conversation to a model.
+The design must support **service-owned model selection per inference
+request** through an approved model pool. It must not depend on a durable
+assignment of a customer conversation to a specific model.
 
-### 2.2 Requirement disposition
+### 2.2 POC 09 requirements
+
+The proposed service must meet these requirements:
+
+1. **One governed inference endpoint:** expose the approved model service
+   through APIM so supported agent runtimes do not need individual provider
+   endpoints or provider credentials.
+2. **Service-owned model routing:** route each inference through Foundry Model
+   Router to an operator-approved, compatible model pool. Callers must not
+   select an underlying model, version, deployment, or routing profile; the
+   fixed `service-default` value is protocol plumbing only.
+3. **Stateless inference:** process each request from its supplied input and
+   shared service configuration. Do not create model-service conversation
+   sessions, store conversation history, or bind a customer conversation to a
+   model across requests.
+4. **Runtime-owned context:** the agent-runtime owns, authorizes, and prepares
+   conversation history. It sends the necessary context on each inference and
+   resubmits updated context after each tool result.
+5. **Runtime-owned tools:** pass supported tool schemas to the model, but keep
+   tool implementations, credentials, authorization, execution, and side
+   effects in the trusted runtime/customer boundary. The runtime validates
+   complete model tool calls before execution.
+6. **JSON and mandatory streaming:** support non-streaming JSON and
+   incremental SSE through the same inference operation. Preserve native
+   protocol events and distinguish successful completion from failure,
+   truncation, cancellation, or an incomplete stream.
+7. **Request-level security:** authenticate and authorize every inference
+   request at the gateway. Keep caller credentials separate from APIM's
+   managed identity to Foundry, and do not treat caller-supplied tenant or
+   routing fields as trusted identity.
+8. **Bounded, safe inference:** enforce documented request and output limits,
+   reject unsupported/stateful routing options, use finite deadlines, and
+   avoid silent context truncation or automatic replay after partial output.
+9. **Operational visibility without transcripts:** record safe request,
+   latency, failure, and provider-reported usage/model metadata when available.
+   Do not log prompts, tool arguments/results, response bodies, or credentials;
+   report missing usage or attribution as unknown.
+10. **Shared-pool pilot scope:** begin with one operator-managed compatible
+    pool for authenticated pilot callers. Customer-specific model entitlements,
+    dedicated capacity, and financial budgets are future product requirements,
+    not implied by the shared endpoint.
+
+**Explicitly excluded:** the source document's requirement to pin a session to
+the same model/version for 24 hours, including across service restarts. POC 09
+has no 24-hour session duration, model-binding record, expiry check, renewal, or
+session-expiration API. Authentication-token lifetimes and per-request
+deadlines are separate concerns.
+
+### 2.3 Requirement disposition
 
 | Requirement from the source / agreed POC direction | POC 09 proposal |
 | --- | --- |
@@ -122,7 +173,7 @@ Deleting the duration alone would leave an unnecessary binding service. This
 proposal removes its dependent APIs, storage, expiry rules, and upgrade-drain
 requirements as well.
 
-### 2.3 Initial scope and non-goals
+### 2.4 Initial scope and non-goals
 
 **In scope:** text inference, registered function tools, JSON, incremental SSE,
 one shared compatible router configuration, request-level authentication,
