@@ -1,15 +1,20 @@
 # POC 08: Stateless inference through AI Gateway
 
-**Status:** Design only; no implementation, deployment, or live validation.
+**Status:** Design only; streaming is not implemented or validated on this path.
+No implementation, deployment, or live acceptance result exists for this POC.
 **Date:** 2026-11-04.
 **Comparison:** [POC 09: automatic model routing](../09-stateless-model-router/README.md).
 
 ## 1. Goal and agreed boundary
 
 Serve customer-provided context and function-tool definitions through a shared
-model API. The customer selects an approved model alias. The customer or
-Hosted Skills runtime owns the agent loop, executes tools, and sends tool
-results back in a subsequent inference request.
+model API. The service, not the customer, selects the model deployment. The
+customer or Hosted Skills runtime owns the agent loop, executes tools, and sends
+tool results back in a subsequent inference request.
+
+**Incremental streaming is mandatory for each inference call.** The contract
+also supports non-streaming JSON. The runtime owns any customer-facing experience
+that combines output across multiple inference calls and tool executions.
 
 There is **no 24-hour pinning requirement**. No session creation API, binding
 table, second conversation history, or dedicated deployment per customer is
@@ -26,9 +31,9 @@ the customer side of the inference boundary, not a new model-service backend.**
 | Component | Responsibility | Does not do |
 | --- | --- | --- |
 | Customer / Hosted Skills runtime, such as MAF or Copilot SDK | Assemble context and tool schemas; call the model; validate and execute tool calls; append results; repeat until completion | Expose provider credentials to users |
-| APIM AI Gateway | Authenticate callers; enforce configured access and traffic policies; resolve aliases; authenticate to and forward to model backends | Execute arbitrary customer functions or own an agent conversation |
+| APIM AI Gateway | Authenticate callers; enforce access and traffic policies; select an operator-approved backend; relay model output | Execute arbitrary customer functions or own an agent conversation |
 | Named model deployment | Generate text or structured tool-call requests | Execute the customer's function implementation |
-| Operator configuration | Map customer identities and approved aliases to backends and policies | Store prompts or conversation history |
+| Operator configuration | Map verified customer identities to approved backends and policies | Store prompts or conversation history |
 
 APIM can also govern MCP endpoints, but that does not make it the agent loop.
 Function schemas describe callable operations; they are not executable code.
@@ -40,11 +45,11 @@ Actual tool code, tool credentials, and tool network access stay with the runtim
 flowchart TB
     U[Customer request] --> R[Customer / Hosted Skills runtime]
     R <-->|Execute authorized tools locally or through approved endpoints| T[Customer tools and data]
-    R -->|Context + tool schemas + model alias| G[APIM AI Gateway]
-    G -->|Approved concrete deployment| M[Foundry model deployment]
-    M -->|Text or tool-call request| G
-    G --> R
-    R -->|Final answer| U
+    R -->|Context + tools + fixed placeholder + stream request| G[APIM AI Gateway]
+    G -->|Service-selected named deployment| M[Foundry model deployment]
+    M -->|Incremental text or tool-call deltas| G
+    G -->|Relay SSE per inference call| R
+    R -->|Answer or customer-facing stream| U
 ```
 
 One shared APIM resource can serve multiple authenticated customers. Shared
@@ -59,25 +64,27 @@ sequenceDiagram
     participant G as APIM AI Gateway
     participant M as Selected model
     participant T as Customer tool
-    R->>G: 1. Context, messages, tool schemas, explicit model alias
-    G->>G: 2. Authenticate, authorize alias, apply limits
-    G->>M: 3. Rewrite alias to deployment; use provider authentication
-    M-->>G: 4. Assistant message containing tool_calls
-    G-->>R: 5. Preserve tool-call IDs, names, and argument strings
-    R->>R: 6. Validate name, arguments, user authorization, and approval
+    R->>G: 1. Context, tool schemas, fixed placeholder, stream=true
+    G->>G: 2. Authenticate, authorize customer, select approved deployment
+    G->>M: 3. Rewrite placeholder; use provider authentication
+    M-->>G: 4. Incremental text or tool-call deltas
+    G-->>R: 5. Relay SSE deltas as they arrive
+    R->>R: 6. Complete stream; assemble and validate authorized tool calls
     R->>T: 7. Execute authorized tool
     T-->>R: 8. Tool result
     R->>G: 9. Original context + assistant tool_calls + matching tool results
     G->>M: 10. Another independently authenticated inference request
-    M-->>G: 11. Final response or further tool calls
-    G-->>R: 12. Return response
+    M-->>G: 11. Stream final response or further tool-call deltas
+    G-->>R: 12. Relay SSE; runtime continues or finishes
 ```
 
 The runtime repeats the loop when necessary. Proposed pilot limits are five
 inference turns per user request, a 30-second tool timeout, and a 120-second
 overall runtime deadline. These are runtime guardrails, not APIM defaults.
-Each inference request has a separately configured backend timeout. On a
-limit or timeout, surface an explicit incomplete/error outcome.
+Configure inference deadlines and connection timeouts separately. The APIM
+`forward-request` timeout waits for backend response headers; it is not a
+deadline for the entire stream. On a limit or timeout, surface an explicit
+incomplete/error outcome.
 
 ## 4. Inference API and routing
 
@@ -85,13 +92,16 @@ Propose `POST /llm/v1/chat/completions`, using OpenAI Chat Completions JSON.
 This is a chosen gateway path, not a claim that APIM creates it without setup.
 See the [shared request and response examples](contract-examples.md).
 
-- `model` is an operator-configured public alias, for example `explicit-standard`.
+- `model` is the fixed protocol placeholder `service-default` for both POCs.
+  It does not let the caller select a model, deployment, or routing profile.
+  Reject any other value before inference.
 - `messages` carries all context required for that inference request, including
   prior assistant tool calls and corresponding tool results.
 - `tools` carries function schemas, not code, callback credentials, or arbitrary
   backend URLs. The runtime keeps the schemas consistent across the tool loop.
-- `stream` selects JSON or SSE. Preserve the upstream protocol and usage when
-  reported. Do not invent usage when it is absent.
+- `stream: true` requests incremental SSE; `stream: false` requests a JSON
+  response. Both modes are required. Preserve the selected protocol and usage
+  when reported; do not invent usage when it is absent.
 - Enforce `store: false` where supported and qualify its behavior. This does
   not override provider abuse monitoring or contractual retention policies.
 - No custom `customer_id`, `session_id`, or session-binding API is needed.
@@ -99,36 +109,45 @@ See the [shared request and response examples](contract-examples.md).
 
 ### Operator-owned route configuration
 
-| Public alias | Backend selection | Policy |
+| Trusted input | Service-controlled route | Policy |
 | --- | --- | --- |
-| `explicit-standard` | A chosen, tool-capable named deployment | Only authenticated customers allowed by configured access policy |
-| `explicit-reasoning` | Another qualified named deployment | Optional alias; enable only after protocol/capability qualification |
+| Verified customer mapped to an eligible policy | An approved, tool-capable named deployment | Apply that customer's access, region, capacity, and traffic rules |
+| Another verified customer | The same or another approved named deployment | Deny before inference if no eligible route is configured |
 
-These aliases are illustrative configuration, not actual model names or
-existing deployments. Select the concrete models, supported parameters,
-region, deployment type, and capacity before implementation.
+This is illustrative configuration, not a claim that deployments already exist.
+The operator chooses concrete models, supported parameters, region, deployment
+type, and capacity before implementation. Customers always send the same fixed
+placeholder, regardless of which deployment the service selects.
 
 Resolve the authenticated gateway subscription or validated workload identity
 to the SaaS customer through an onboarding mapping. An Entra directory ID or
 caller-supplied tenant header alone is not the SaaS authorization boundary.
-Apply limits using this verified customer identity.
+Apply limits using this verified customer identity. For the POC, a configured
+APIM subscription key can identify a mapped workload; a validated Entra
+workload identity is a production option. Neither a subscription key nor a
+workload identity by itself authorizes individual end-user tool actions.
 
-The gateway selects the backend and rewrites the model alias through configured
-policies, rather than trusting a caller URL or provider credential. The model
-backend must reject unauthorized direct calls; use scoped gateway identity and
-network controls as required. Customer gateway credentials never become model
-provider or tool credentials.
+The gateway validates the fixed placeholder, selects the backend using the
+trusted mapping, and rewrites the backend model field through configured
+policies. Reject caller-supplied deployment identifiers and routing overrides;
+do not expose a bypass route that accepts a caller URL or provider credential.
+The model backend must reject unauthorized direct calls; use a scoped gateway
+managed identity and network controls as required. Customer gateway credentials
+never become model provider or tool credentials. A provider-reported model name
+in a response is metadata, not permission to select or call that model.
 
 No automatic cross-model fallback in this baseline. Any equivalent-deployment
-failover must be explicitly configured and qualified. The alias is resolved on
-each request, not pinned; avoid changing its target during an acceptance run.
+failover must be explicitly configured and qualified. The route is selected on
+each request, not pinned; keep operator configuration stable during a comparison
+run and qualify continuation across any permitted change.
 
 ## 5. Statelessness and protocol compatibility
 
 Any gateway instance can process an inference request without a conversation
 lookup. The runtime stores/restores its own history if needed. Operator route
-configuration, credential references, rate counters, and redacted telemetry
-still exist; stateless serving is not a claim of zero storage everywhere.
+configuration, credential references, rate counters, redacted telemetry, and
+active streaming connections still exist; stateless serving is not a claim of
+zero state everywhere.
 
 Use an ordinary imported OpenAI-compatible API and APIM policies as the baseline.
 The [unified model API](https://learn.microsoft.com/en-us/azure/api-management/unified-model-api)
@@ -145,20 +164,48 @@ messages are different contracts; translating them is explicit adapter work.
 Do not silently substitute provider-managed conversations for runtime-owned
 context.
 
-For SSE, use a supported APIM tier, disable response buffering/body logging/
-response caching, and verify incremental delivery. Accumulate complete tool-call
-arguments before validation or execution. A truncated stream is not a completed
-tool call or successful response. No prompt or semantic response cache is enabled
-in this POC.
+### Mandatory per-inference streaming
+
+- For `stream: true`, return `text/event-stream` incrementally as the backend
+  emits events, not a completed response split into chunks afterward. Preserve
+  Chat Completions choice and tool-call indexes, IDs, argument fragments,
+  finish reasons, and the `[DONE]` marker. The runtime assembles each call and
+  waits for a complete `tool_calls` finish and `[DONE]` before validating and
+  executing it. A truncated, filtered, or length-limited result is not a
+  complete executable tool call.
+- Each inference call has its own stream. A tool call terminates that model
+  response; the runtime executes the tool and starts a new inference call.
+  Joining these into one customer-facing stream is the runtime's responsibility,
+  not a capability assumed of APIM or the model service.
+- Use an APIM tier supporting long-running HTTP connections; Consumption does
+  not. Set `forward-request buffer-response="false"` and avoid other
+  response-buffering policies. Disable request and response body logging for
+  Azure Monitor, Application Insights, and Event Hubs, including inherited
+  diagnostics, and disable gateway response and semantic caching.
+- Configure and test idle keepalive, deadlines, concurrency, and bounded
+  tool-argument buffering. APIM's infrastructure has a four-minute idle timeout;
+  use an appropriate supported keepalive strategy for longer idle periods.
+  Verify whether client cancellation reaches the backend; do not assume it
+  stops inference or billing immediately.
+- Preserve supported error events after streaming starts, or treat an unexpected
+  termination as incomplete. HTTP status cannot be changed after headers are
+  sent. Do not automatically replay an inference after partial output.
+
+Gateway caching being disabled does not establish zero provider retention or
+disable provider-side prompt caching. Qualify those separately. See the
+[shared SSE and JSON examples](contract-examples.md) and
+[APIM SSE configuration guidance](https://learn.microsoft.com/en-us/azure/api-management/how-to-server-sent-events).
 
 ## 6. Errors, safety, and ownership
 
-- Gateway policy errors use an OpenAI-shaped `error` object: 401 for missing/
-  invalid credentials, 403 for denied access, 400 for an unknown model alias,
-  413 for a configured payload-size limit, and 429 for a gateway traffic limit.
-  Set a proposed initial body limit of 1 MiB; token/context limits are separate.
-- Preserve provider error statuses and safe error details rather than returning
-  success. Configure explicit timeout handling; timeouts are not empty answers.
+- Before response headers, gateway policy errors use an OpenAI-shaped `error`
+  object: 401 for missing/invalid credentials, 403 for denied customer access,
+  400 for an invalid model placeholder, 413 for a configured payload-size limit,
+  and 429 for a gateway traffic limit. Set a proposed initial body limit of
+  1 MiB; token/context limits are separate. Missing eligible routes fail closed.
+- Before headers, preserve provider error statuses and safe details rather than
+  returning success. After headers, follow the streaming error rules above.
+  Timeouts and disconnects are not empty successful answers.
 - Do not automatically replay inference after partial output. Caller/SDK retry
   behavior must be configured and recorded; retries can incur additional cost.
 - Model output and tool arguments are untrusted. The runtime checks schemas,
@@ -184,12 +231,17 @@ shippable amounts are five and zero. These are future fixture values, not result
 | Context ownership | A second call includes the complete authorized transcript; no inference-side history retrieval |
 | Customer isolation | Interleave A/B loops and verify each tool receives only its authorized scope; neither answer contains the other's canary |
 | Stateless restart | A fresh client/worker can continue using caller-supplied messages without recreating a binding |
-| Direct model choice | Each approved alias resolves to its configured deployment; unknown/denied aliases fail explicitly |
+| Service-owned model selection | The same fixed placeholder selects each verified customer's configured deployment; caller-supplied models, route overrides, unauthorized mappings, and bypass paths fail before inference |
 | No tool required | A context-only question completes without executing a tool |
 | Invalid tool output | Unknown tool name, malformed arguments, mismatched call ID, or unauthorized SKU causes no unauthorized execution |
 | Failures and limits | Cover 401/403/413/429, provider errors, deadlines, tool failure, and loop exhaustion with no silent fallback |
-| Streaming | Observe incremental text and tool-argument fragments; execute no partial tool call; interrupted streams are marked incomplete |
-| Observability | Record verified customer, request ID, requested alias, backend/served model when available, timings, errors, and reported usage without prompt bodies |
+| Incremental SSE | `stream: true` returns SSE before inference completes; preserve text deltas, choice/tool indexes, IDs, finish reason, and `[DONE]` |
+| Streamed tools | Assemble fragmented and interleaved tool calls correctly; execute only complete, schema-valid, authorized calls after stream completion |
+| Streaming isolation | Interleave A and B streams through both the synthetic fixture and the live gateway/model path; no event or tool argument contains the other customer's canary |
+| Stream failures | Exercise pre-header errors, post-header failure, missing `[DONE]`, cancellation, and deadlines; report incomplete results and never replay partial output or execute partial calls |
+| JSON compatibility | `stream: false` returns the corresponding JSON text and tool-call shapes, with the same routing and authorization rules |
+| Real integration | Qualify incremental streaming and tool handling through the actual APIM tier, named deployment, and pinned runtime/SDK; a synthetic double is not cloud evidence |
+| Observability | Record verified customer, request ID, selected backend/served model when available, time to first event, terminal status, errors, and reported usage without prompt bodies |
 
 First implement a deterministic provider double and caller-owned tool fixture.
 Passing that proves contract wiring only, not APIM policy execution or LLM quality.
@@ -197,10 +249,14 @@ Then, with separate approval for provisioning and paid calls, qualify real APIM,
 the exact SDK, and an approved model. Test forced tool selection only where the
 selected model supports it; test natural tool selection separately.
 
-For streaming qualification, a synthetic backend should emit events 500 ms apart;
-propose a maximum additional inter-hop event delay of 250 ms on an unloaded
-test path and report actual measurements. Live LLM token timing is not a
-substitute for this forwarding test. Agree load and latency targets separately.
+For streaming qualification, a synthetic backend should emit at least five
+events 500 ms apart. On an unloaded test path, the proposed gate is that each
+event reaches the client within 250 ms of its backend emission, and the first
+arrives before the last is emitted. Measure with a shared monotonic clock or
+document and account for clock skew. Record every emission and arrival; this is
+an unmeasured POC target, not a service-level agreement. Run it through the
+actual configured gateway as well as locally. Live LLM token timing is not a
+substitute for the forwarding test. Agree load and latency targets separately.
 
 No code, APIM policy, Azure resource, paid call, or acceptance result is delivered
 by this design-only POC.

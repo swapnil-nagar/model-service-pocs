@@ -5,7 +5,8 @@ LLM calls: four HTTP/process experiments and one conditional GitHub Copilot
 Fusion SDK-boundary experiment. Their default commands never provision cloud
 resources or send prompts to real models. This repository is standalone; the
 [Azure Functions Agents runtime](https://github.com/Azure/azure-functions-agents-runtime)
-is an external reference, not a dependency or bundled checkout.
+is not bundled. The original experiments use it as an external reference; the
+optional POC 09 native sample requires a separate editable runtime checkout.
 
 An **explicit opt-in hosted extension** now lives separately from those mocks:
 [POC 06: shared Foundry/APIM](06-shared-foundry-apim/README.md). Its source,
@@ -23,18 +24,32 @@ unused Fusion runner or substituting another model.
 
 ### New stateless inference designs (2026-11-04)
 
-The following two POCs are **design-only**, with no implementation, deployment,
-or new live results:
+POC 08 is **design-only**. POC 09 now has a separately prepared
+[runnable MAF runtime sample](09-model-router-runtime-sample/README.md).
+Its isolated gateway, router, and approved model-only Foundry project are
+deployed. Real A/B JSON and SSE tool round trips pass through the project-based
+Responses route; POC 08 remains design-only:
 
 | POC | Model selection | Context and tool execution |
 | --- | --- | --- |
-| [08: stateless AI Gateway](08-stateless-ai-gateway/README.md) | Customer selects an approved model alias through APIM | Customer / Hosted Skills runtime |
-| [09: stateless Model Router](09-stateless-model-router/README.md) | APIM forwards to Foundry Model Router for automatic selection | Customer / Hosted Skills runtime |
+| [08: stateless AI Gateway](08-stateless-ai-gateway/README.md) | The service selects an approved named deployment through APIM | Customer / Hosted Skills runtime |
+| [09: stateless Model Router](09-stateless-model-router/README.md) | The service selects a router deployment; Foundry chooses an approved underlying model | Customer / Hosted Skills runtime |
 
 Both accept customer-provided context and function-tool schemas. The model
 returns tool-call requests; the customer runtime validates/executes the tools and
 submits their results on the next inference call. Neither APIM nor Model Router
-replaces that agent loop. No separate orchestration service is proposed.
+replaces that agent loop. No separate orchestration service is proposed. The
+customer does not select a model or routing profile; both POCs use the same
+fixed protocol placeholder and operator-controlled customer routing.
+
+**Incremental SSE streaming per inference call is a mandatory acceptance
+requirement for both POCs**, with non-streaming JSON also supported. The runtime
+owns any customer-facing stream spanning tools and multiple model calls.
+POC 08 is not live-qualified. POC 09's sample has 27 local tests and four passing
+live checks (A/B JSON and SSE), including tool outputs and incremental deltas.
+The small router has a shared 10-model-requests/minute limit; the smoke driver
+paces calls. These results do not prove the separate 250 ms APIM forwarding gate,
+served-model attribution, cancellation/billing, or production reliability.
 See the [shared API examples](08-stateless-ai-gateway/contract-examples.md).
 
 **There is no 24-hour pinning requirement for POCs 08 and 09.** The session APIs,

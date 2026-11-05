@@ -1,0 +1,112 @@
+<policies>
+  <inbound>
+    <base />
+    <choose>
+      <when condition="@(context.Subscription == null || (context.Subscription.Id != &quot;poc09-a&quot; &amp;&amp; context.Subscription.Id != &quot;poc09-b&quot;))">
+        <return-response>
+          <set-status code="403" reason="Forbidden" />
+          <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+          <set-body>{"error":{"code":"customer_not_allowed","type":"permission_error","message":"An approved POC09 subscription is required."}}</set-body>
+        </return-response>
+      </when>
+    </choose>
+    <set-variable name="customer" value="@(context.Subscription.Id == &quot;poc09-a&quot; ? &quot;A&quot; : &quot;B&quot;)" />
+    <choose>
+      <when condition="@(!string.IsNullOrEmpty(context.Request.Headers.GetValueOrDefault(&quot;x-poc09-customer&quot;, &quot;&quot;)) &amp;&amp; context.Request.Headers.GetValueOrDefault(&quot;x-poc09-customer&quot;, &quot;&quot;) != (string)context.Variables[&quot;customer&quot;])">
+        <return-response>
+          <set-status code="403" reason="Forbidden" />
+          <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+          <set-body>{"error":{"code":"customer_conflict","type":"permission_error","message":"Customer scope conflicts with the verified subscription."}}</set-body>
+        </return-response>
+      </when>
+    </choose>
+    <rate-limit-by-key calls="12" renewal-period="60" counter-key="@(context.Subscription.Id)" />
+    <quota-by-key calls="200" renewal-period="3600" counter-key="@(context.Subscription.Id)" />
+    <set-variable name="validationError" value="@{
+      var raw = context.Request.Body.As&lt;string&gt;(preserveContent: true);
+      if (string.IsNullOrWhiteSpace(raw)) { return &quot;invalid_json&quot;; }
+      if (System.Text.Encoding.UTF8.GetByteCount(raw) &gt; 1048576) { return &quot;request_too_large&quot;; }
+      JObject body;
+      try { body = JObject.Parse(raw); }
+      catch (Newtonsoft.Json.JsonReaderException) { return &quot;invalid_json&quot;; }
+      if (body[&quot;model&quot;]?.Type != JTokenType.String || (string)body[&quot;model&quot;] != &quot;service-default&quot;) { return &quot;invalid_model&quot;; }
+      var responses = context.Operation.Id == &quot;sdk-responses&quot;;
+      if (responses) {
+        if (body[&quot;input&quot;] == null || (body[&quot;input&quot;].Type != JTokenType.Array &amp;&amp; body[&quot;input&quot;].Type != JTokenType.String)) { return &quot;invalid_input&quot;; }
+      } else {
+        if (body[&quot;messages&quot;]?.Type != JTokenType.Array || !body[&quot;messages&quot;].HasValues) { return &quot;invalid_messages&quot;; }
+      }
+      var allowed = responses
+        ? new string[] { &quot;model&quot;, &quot;input&quot;, &quot;instructions&quot;, &quot;tools&quot;, &quot;tool_choice&quot;, &quot;stream&quot;, &quot;store&quot;, &quot;temperature&quot;, &quot;top_p&quot;, &quot;max_output_tokens&quot;, &quot;parallel_tool_calls&quot;, &quot;text&quot;, &quot;reasoning&quot;, &quot;include&quot;, &quot;metadata&quot;, &quot;background&quot;, &quot;truncation&quot; }
+        : new string[] { &quot;model&quot;, &quot;messages&quot;, &quot;tools&quot;, &quot;tool_choice&quot;, &quot;stream&quot;, &quot;store&quot;, &quot;temperature&quot;, &quot;top_p&quot;, &quot;max_tokens&quot;, &quot;max_completion_tokens&quot;, &quot;stream_options&quot;, &quot;parallel_tool_calls&quot;, &quot;response_format&quot;, &quot;n&quot; };
+      if (body.Properties().Any(p =&gt; !allowed.Contains(p.Name))) { return &quot;unsupported_field&quot;; }
+      if (body[&quot;stream&quot;] != null &amp;&amp; body[&quot;stream&quot;].Type != JTokenType.Boolean) { return &quot;invalid_stream&quot;; }
+      if (body[&quot;store&quot;] != null &amp;&amp; (body[&quot;store&quot;].Type != JTokenType.Boolean || (bool)body[&quot;store&quot;])) { return &quot;provider_state_not_allowed&quot;; }
+      if (body[&quot;background&quot;] != null &amp;&amp; (body[&quot;background&quot;].Type != JTokenType.Boolean || (bool)body[&quot;background&quot;])) { return &quot;background_not_allowed&quot;; }
+      if (body[&quot;truncation&quot;] != null &amp;&amp; (body[&quot;truncation&quot;].Type != JTokenType.String || (string)body[&quot;truncation&quot;] != &quot;disabled&quot;)) { return &quot;truncation_not_allowed&quot;; }
+      if (body[&quot;n&quot;] != null &amp;&amp; (body[&quot;n&quot;].Type != JTokenType.Integer || body[&quot;n&quot;].ToString() != &quot;1&quot;)) { return &quot;multiple_choices_not_allowed&quot;; }
+      foreach (var field in new string[] { &quot;max_tokens&quot;, &quot;max_completion_tokens&quot;, &quot;max_output_tokens&quot; }) {
+        if (body[field] != null) {
+          int limit;
+          if (body[field].Type != JTokenType.Integer || !int.TryParse(body[field].ToString(), out limit) || limit &lt; 1 || limit &gt; 256) { return &quot;output_limit_exceeded&quot;; }
+        }
+      }
+      if (body[&quot;max_tokens&quot;] != null &amp;&amp; body[&quot;max_completion_tokens&quot;] != null) { return &quot;conflicting_output_limits&quot;; }
+      return &quot;&quot;;
+    }" />
+    <choose>
+      <when condition="@(!string.IsNullOrEmpty((string)context.Variables[&quot;validationError&quot;]))">
+        <return-response>
+          <set-status code="@((string)context.Variables[&quot;validationError&quot;] == &quot;request_too_large&quot; ? 413 : 400)" reason="Invalid Request" />
+          <set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>
+          <set-body>@{
+            var code = (string)context.Variables["validationError"];
+            return new JObject(new JProperty("error", new JObject(new JProperty("code", code), new JProperty("type", "invalid_request_error"), new JProperty("message", code)))).ToString();
+          }</set-body>
+        </return-response>
+      </when>
+    </choose>
+    <set-body>@{
+      var body = context.Request.Body.As&lt;JObject&gt;(preserveContent: true);
+      body["model"] = "__ROUTER_DEPLOYMENT__";
+      body["store"] = false;
+      if (context.Operation.Id == "sdk-responses") {
+        body["background"] = false;
+        body["truncation"] = "disabled";
+        if (body["max_output_tokens"] == null) { body["max_output_tokens"] = 256; }
+      } else {
+        if (body["max_tokens"] == null &amp;&amp; body["max_completion_tokens"] == null) { body["max_tokens"] = 256; }
+      }
+      return body.ToString();
+    }</set-body>
+    <set-header name="api-key" exists-action="delete" />
+    <set-header name="Ocp-Apim-Subscription-Key" exists-action="delete" />
+    <set-header name="Authorization" exists-action="delete" />
+    <set-header name="x-poc09-customer" exists-action="override"><value>@((string)context.Variables["customer"])</value></set-header>
+    <set-query-parameter name="subscription-key" exists-action="delete" />
+    <choose>
+      <when condition="@(context.Operation.Id == &quot;sdk-responses&quot;)">
+        <set-backend-service base-url="__PROJECT_HOST__" />
+        <rewrite-uri template="/api/projects/__PROJECT_NAME__/openai/v1/responses" copy-unmatched-params="false" />
+        <set-query-parameter name="api-version" exists-action="delete" />
+        <authentication-managed-identity resource="https://ai.azure.com" />
+      </when>
+      <otherwise>
+        <set-backend-service base-url="__FOUNDRY_HOST__" />
+        <rewrite-uri template="/openai/deployments/__ROUTER_DEPLOYMENT__/chat/completions" copy-unmatched-params="false" />
+        <set-query-parameter name="api-version" exists-action="override"><value>2024-10-21</value></set-query-parameter>
+        <authentication-managed-identity resource="https://cognitiveservices.azure.com" />
+      </otherwise>
+    </choose>
+  </inbound>
+  <backend>
+    <forward-request timeout="120" buffer-response="false" />
+  </backend>
+  <outbound>
+    <base />
+    <set-header name="x-poc09-customer" exists-action="override"><value>@((string)context.Variables["customer"])</value></set-header>
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>
