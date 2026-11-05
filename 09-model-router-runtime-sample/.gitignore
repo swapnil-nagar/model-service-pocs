@@ -6,3 +6,10 @@ local.settings.json
 infra/main.json
 deployment-outputs.json
 live-evidence.json
+.basic-chat-profile/
+.basic-chat-state/
+.basic-chat-azurite/
+basic-chat-evidence.json
+.daily-azure-report-profile/
+.daily-azure-report-state/
+daily-azure-report-evidence.json

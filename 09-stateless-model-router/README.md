@@ -2,7 +2,7 @@
 
 **Status:** Design and acceptance plan, with a separately prepared
 [runnable MAF sample](../09-model-router-runtime-sample/README.md).
-Sixty-seven local tests and all four original native A/B inventory JSON/SSE tool round trips
+116 local tests and all four original native A/B inventory JSON/SSE tool round trips
 pass. The approved isolated gateway, router, and model-only Foundry project are
 deployed. The sample uses project-based Responses, not the unsupported
 resource-level Responses route. Each live stream delivered 12 text deltas and
@@ -12,6 +12,12 @@ The runtime sample now also includes real NWS weather observations and explicit
 tool-failure handling. A further four-request mixed live run passes inventory
 JSON/SSE for A and real weather JSON/SSE for B, with correct tool results and
 terminal completion. Its runbook records provider limitations and evidence.
+An opt-in profile also runs the runtime repository's original basic-chat
+entrypoint, with live JSON history recall and a 9-delta SSE continuation:
+[native basic-chat instructions](../09-model-router-runtime-sample/README.md#6-run-the-original-basic-chat-sample).
+The [native daily report profile](../09-model-router-runtime-sample/daily-azure-report/README.md)
+also passes structured JSON and a 24-delta SSE tool round trip with synthetic
+inventory; email and automatic timer execution are disabled.
 **Date:** 2026-11-04.
 **Baseline:** [POC 08: service-selected named model through APIM](../08-stateless-ai-gateway/README.md).
 

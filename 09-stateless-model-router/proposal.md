@@ -862,7 +862,7 @@ history storage require separate approval. Neither private networking nor
 
 The [runtime sample](../09-model-router-runtime-sample/README.md) records:
 
-- 67 passing local tests against the actual pinned runtime/MAF, with synthetic
+- 116 passing local tests against the actual pinned runtime/MAF, with synthetic
   provider transport for deterministic success/failure coverage.
 - Original A/B inventory JSON and SSE tool round trips through real APIM and
   project-based Model Router.
@@ -870,6 +870,9 @@ The [runtime sample](../09-model-router-runtime-sample/README.md) records:
   weather JSON/SSE for B, with one actual tool call per request.
 - In the mixed run, inventory delivered 12 text deltas and weather delivered
   30; both streams ended with runtime `done`, and answers matched tool results.
+- The original runtime basic-chat entrypoint passed JSON history recall and a
+  streaming continuation with 9 text deltas and terminal `done`; the runbook
+  distinguishes the initial format-check failure from its approved recheck.
 - Real missing-key, invalid-input, customer-conflict, and model-override
   rejection checks, plus an observed provider 429 surfaced as failure.
 

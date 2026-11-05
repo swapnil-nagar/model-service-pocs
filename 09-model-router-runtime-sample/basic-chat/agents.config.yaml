@@ -1,0 +1,6 @@
+model: service-default
+timeout: 120
+agent_configuration:
+  max_output_tokens: 256
+system_tools:
+  web_request: false

@@ -10,7 +10,7 @@ success. Those figures describe the original inventory qualification.
 The new **mixed-capability live run also passes all four checks**: inventory
 JSON/SSE for A and real NWS weather JSON/SSE for B. Inventory streamed 12 text
 deltas; weather streamed 30; both executed the correct tool and ended with
-`done`. Sixty-seven local tests pass against the actual runtime
+`done`. 116 local tests pass against the actual runtime
 checkout and pinned MAF packages using synthetic HTTP transport. During live
 testing, both native Functions apps ran locally on ports 7071/7072; the chat UI
 was configured for localhost without exposing an APIM key. Start your own
@@ -18,6 +18,11 @@ local apps using the instructions below.
 
 This is the runnable companion to [POC 09's design](../09-stateless-model-router/README.md).
 It neither modifies the external agent-runtime checkout nor changes POC 06.
+To run the runtime repository's original **basic-chat** sample rather than the
+inventory/weather app, use [the native basic-chat launch profile](#6-run-the-original-basic-chat-sample).
+For the runtime's multi-agent report sample, use the
+[native daily Azure report profile](daily-azure-report/README.md):
+synthetic read-only inventory, no email, and automatic timer execution disabled.
 
 ## Flow
 
@@ -279,6 +284,11 @@ missing/stale data, provider errors/timeouts, redirect refusal, and failure
 results passing through the real MAF tool loop without fabricating readings.
 Both tools explicitly register their flat Pydantic input schemas with `tool`.
 The policy test checks XML/configuration shape, not live APIM policy execution.
+Additional tests import the original `samples/basic-chat/src/function_app.py`,
+exercise its native HTTP handlers and MAF client, verify resent conversation
+history, reject provider authentication failures, and validate the live checker.
+A PowerShell regression test verifies that base-URL variables are removed, not
+left present but empty.
 
 ## 3. Provision only after approval
 
@@ -413,6 +423,100 @@ curl.exe --no-buffer --fail-with-body `
 Each model inference has its own stream. The runtime can keep this outer
 customer-facing stream open across tool execution and subsequent model calls.
 The inference gateway itself keeps no customer conversation.
+
+## 6. Run the original basic-chat sample
+
+This mode runs the **existing entrypoint** in the sibling runtime checkout:
+`azure-functions-agents-runtime\samples\basic-chat\src\function_app.py`.
+That file calls `create_function_app()`; there is no replacement model client
+or custom chat endpoint in this POC.
+
+The original sample defaults to the `foundry` provider, 4,096 output tokens,
+and optional sandbox/web capabilities. Those are not the POC 09 contract.
+The opt-in profile instead:
+
+- Uses the native MAF `azure_openai` provider against the APIM `/llm` endpoint.
+- Supplies `service-default`, a 256-token limit, and a 120-second runtime setting.
+- Copies the original `main.agent.md` byte-for-byte into an ignored app-root
+  profile, alongside [compatible configuration](basic-chat/agents.config.yaml).
+- Uses the runtime's supported `AZURE_FUNCTIONS_AGENTS_APP_ROOT` override;
+  Core Tools still executes the original sample entrypoint and host configuration.
+- Disables web requests and leaves the code sandbox unconfigured to isolate
+  chat/history/streaming validation. MCP registration is inherited from the
+  original sample, but MCP/code execution are not qualified by this check.
+- Keeps conversation history in runtime-owned local Azurite storage, not APIM
+  or a provider-managed conversation. A runtime conversation ID is not a
+  Model Service session or model pin.
+
+The launcher prints entrypoint/agent SHA256 hashes. The external runtime
+checkout remains unchanged. It refuses to overwrite an existing
+`src\local.settings.json`, since that file could override gateway configuration;
+use a clean compatible checkout instead.
+
+From this sample directory, start Azurite in a separate terminal:
+
+```powershell
+azurite --location .\.basic-chat-azurite --silent --disableTelemetry --skipApiVersionCheck `
+  --blobHost 127.0.0.1 --queueHost 127.0.0.1 --tableHost 127.0.0.1
+```
+
+The installed Azurite 3.37.0 does not recognize the Python storage SDK's
+`2026-10-06` API header. `--skipApiVersionCheck` is a documented **local emulator**
+compatibility option; basic Blob read/write was separately verified. It does
+not qualify production storage or all newer storage features.
+
+With the approved APIM key already loaded as described in section 4:
+
+```powershell
+.\Start-Agent.ps1 -Sample basic-chat -Customer A `
+  -GatewayEndpoint "https://<apim-name>.azure-api.net/llm" -Port 7073
+```
+
+- UI: `http://localhost:7073/agents/main/`
+- JSON: `POST /agents/main/chat`, body `{"prompt":"Hello"}`
+- SSE: `POST /agents/main/chatstream`, same body
+- Continuation: send the returned runtime `session_id` in `x-ms-session-id`.
+
+The UI stays localhost-only and never receives the APIM key. Azurite and the
+runtime must stay running while testing. This is not production user/session
+authorization.
+
+After approving **three live inference requests**:
+
+```powershell
+.\.venv\Scripts\python.exe -B .\smoke_basic_chat.py --approve-paid-calls `
+  --output .\basic-chat-evidence.json
+```
+
+The checker verifies the UI, saves a random code in a JSON turn, recalls it in
+a second JSON turn, and recalls it again in an incremental SSE turn using the
+same runtime conversation. It requires multiple text deltas, the correct saved
+code, terminal `done`, and no unexpected tools/errors. Calls are paced
+15 seconds apart; there are no checker retries. Evidence contains only check
+outcomes/counts, not keys, prompts, answers, or conversation IDs. Missing history
+or partial output fails the check and preserves partial evidence.
+
+**Live result:** the original basic-chat app passed two JSON turns and a
+streaming continuation through real APIM/Model Router. Runtime-owned history
+retained the random code; the final stream delivered **9 text deltas** and
+terminal `done`. Four model requests were used: the first streaming response
+recalled the code but failed an overly strict boilerplate-format check; one
+additional, explicitly approved streaming call passed the corrected
+code-recall/incremental-delivery check. The ignored evidence file records this
+distinction instead of counting the first format check as successful.
+
+## 7. Run the original daily-azure-report sample
+
+The [daily Azure report profile](daily-azure-report/README.md) runs the original
+runtime entrypoint with its timer, structured resource-summary HTTP route,
+and interactive agent. Its opt-in safety profile uses a local synthetic
+`azure_rest` tool, explicit dry-run instructions, and the same APIM/Model Router
+configuration as basic-chat. It does not enable Outlook, Azure writes, or
+automatic timer execution.
+
+Live structured JSON and a **24-delta SSE tool round trip** passed against the
+existing gateway. The timer handler is tested locally; it was not live-triggered.
+The runbook records the initial failed grounding check and production limits.
 
 ## Remaining acceptance gates
 
