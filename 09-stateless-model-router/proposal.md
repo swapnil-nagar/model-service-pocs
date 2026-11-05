@@ -8,20 +8,36 @@
 
 **Implementation:** [POC 09 runtime sample and qualification results](../09-model-router-runtime-sample/README.md).
 
-## 1. High-level design and architecture
+## 1. Problem, requirements, and out of scope
 
-Provide a shared **stateless inference API**, implemented with Azure API
-Management as the AI Gateway and Microsoft Foundry Model Router as the
-service-owned model selector.
+### 1.1 Problem
 
-Customers use their agent-runtime to supply context and tool definitions. The
-runtime calls one model-service endpoint using the fixed protocol placeholder
-`service-default`. APIM authenticates the caller and substitutes the approved
-router deployment. Foundry selects an eligible underlying model for that
-inference request and returns JSON or incremental streaming output.
+- Hosted Skills customers using MAF or Copilot SDK need model access without
+  managing individual model endpoints or provider credentials.
+- The agent-runtime must retain control of conversation context and tools.
 
-**The agent-runtime runs the agent. The model service supplies inference.**
-Neither APIM nor Model Router executes customer tools or manages conversations.
+### 1.2 Requirements
+
+- Provide one governed API through APIM; the service selects an approved model.
+- Support JSON chat and mandatory incremental SSE on the same inference operation.
+- Keep inference stateless: the runtime supplies context and tool schemas,
+  executes authorized tools, and sends their results.
+- Authenticate every request, separate customer and provider credentials,
+  enforce limits, and report failures.
+
+### 1.3 Out of scope
+
+- **24-hour session requirement**, model pinning, or model-service bindings/expiry.
+- Customer-selected models, arbitrary provider endpoints, or model-service
+  conversation storage and tool execution.
+- Provider-managed conversations, background jobs, or stream resume/replay.
+- Customer-specific model entitlements, dedicated capacity, and production budgets.
+
+## 2. High-level design and architecture
+
+- Request path: customer -> agent-runtime -> APIM -> Foundry Model Router -> approved model.
+- The runtime owns history and tools; APIM authenticates and maps `service-default` to the router.
+- Model Router selects a model per inference; JSON or SSE returns through APIM.
 
 ```mermaid
 flowchart TB
@@ -55,7 +71,7 @@ The separate Chat Completions compatibility route goes from APIM to the
 account's router deployment API. It does not translate Responses payloads into
 Chat Completions.
 
-### 1.1 Components and ownership
+### 2.1 Components and ownership
 
 | Component | Owns | Does not own |
 | --- | --- | --- |
@@ -74,7 +90,7 @@ can itself be a Function App; that is a different responsibility.
 There is no second APIM traversal, custom inference proxy, Table Storage
 binding registry, or Redis conversation/session store in the baseline.
 
-### 1.2 What happens on one inference call
+### 2.2 What happens on one inference call
 
 1. The runtime sends the question, relevant history, instructions, and allowed
    function schemas to APIM.
@@ -88,112 +104,6 @@ binding registry, or Redis conversation/session store in the baseline.
 6. If the result requests a tool, the runtime validates and executes it, then
    makes another independent inference request with the complete context and
    tool result.
-
-## 2. Problem, requirements, and deliberate changes from the source
-
-### 2.1 Problem statement
-
-Customers running agents with MAF or Copilot SDK need a single, governed way to
-access model inference without integrating with and holding credentials for
-multiple model endpoints. Their agent-runtime must remain in control of
-conversation context, customer data, and tools, while the model service
-provides ordinary chat, incremental streaming, and model-generated tool-call
-requests.
-
-The design must support **service-owned model selection per inference
-request** through an approved model pool. It must not depend on a durable
-assignment of a customer conversation to a specific model.
-
-### 2.2 POC 09 requirements
-
-The proposed service must meet these requirements:
-
-1. **One governed inference endpoint:** expose the approved model service
-   through APIM so supported agent runtimes do not need individual provider
-   endpoints or provider credentials.
-2. **Service-owned model routing:** route each inference through Foundry Model
-   Router to an operator-approved, compatible model pool. Callers must not
-   select an underlying model, version, deployment, or routing profile; the
-   fixed `service-default` value is protocol plumbing only.
-3. **Stateless inference:** process each request from its supplied input and
-   shared service configuration. Do not create model-service conversation
-   sessions, store conversation history, or bind a customer conversation to a
-   model across requests.
-4. **Runtime-owned context:** the agent-runtime owns, authorizes, and prepares
-   conversation history. It sends the necessary context on each inference and
-   resubmits updated context after each tool result.
-5. **Runtime-owned tools:** pass supported tool schemas to the model, but keep
-   tool implementations, credentials, authorization, execution, and side
-   effects in the trusted runtime/customer boundary. The runtime validates
-   complete model tool calls before execution.
-6. **JSON and mandatory streaming:** support non-streaming JSON and
-   incremental SSE through the same inference operation. Preserve native
-   protocol events and distinguish successful completion from failure,
-   truncation, cancellation, or an incomplete stream.
-7. **Request-level security:** authenticate and authorize every inference
-   request at the gateway. Keep caller credentials separate from APIM's
-   managed identity to Foundry, and do not treat caller-supplied tenant or
-   routing fields as trusted identity.
-8. **Bounded, safe inference:** enforce documented request and output limits,
-   reject unsupported/stateful routing options, use finite deadlines, and
-   avoid silent context truncation or automatic replay after partial output.
-9. **Operational visibility without transcripts:** record safe request,
-   latency, failure, and provider-reported usage/model metadata when available.
-   Do not log prompts, tool arguments/results, response bodies, or credentials;
-   report missing usage or attribution as unknown.
-10. **Shared-pool pilot scope:** begin with one operator-managed compatible
-    pool for authenticated pilot callers. Customer-specific model entitlements,
-    dedicated capacity, and financial budgets are future product requirements,
-    not implied by the shared endpoint.
-
-**Explicitly excluded:** the source document's requirement to pin a session to
-the same model/version for 24 hours, including across service restarts. POC 09
-has no 24-hour session duration, model-binding record, expiry check, renewal, or
-session-expiration API. Authentication-token lifetimes and per-request
-deadlines are separate concerns.
-
-### 2.3 Requirement disposition
-
-| Requirement from the source / agreed POC direction | POC 09 proposal |
-| --- | --- |
-| MAF / Copilot SDK callers need model access | Retained. Each exact SDK, wire protocol, and adapter is qualified separately; MAF is the currently exercised implementation. |
-| Access to multiple model endpoints | Retained as an approved underlying router pool behind one public inference endpoint. It is not a router over arbitrary customer URLs. |
-| Customer selects a public model when starting a session | Replaced, consistently with the agreed POC 09 direction: the customer does not choose a model, version, deployment, or routing profile. `service-default` is a fixed protocol placeholder. |
-| Same model/version for 24 hours, surviving restarts | **Removed. No 24-hour session requirement or model pinning exists.** |
-| Session binding, ownership lookup, expiry/conflict checks | Removed from the model service. Authenticate every inference request; the runtime still checks ownership before loading a conversation or executing tools. |
-| No second conversation history | Retained. Each inference carries the complete runtime-prepared context it needs. |
-| JSON and streaming through the same API | Retained. `stream` selects delivery mode on the same inference operation. |
-| All model calls pass through APIM | Retained, with one gateway traversal rather than a customer-API/proxy/model-API loop. |
-| Customer and provider credentials remain separate | Retained. APIM removes caller credentials and uses its own managed identity to Foundry. |
-| Shared catalog for authenticated customers; richer customer policies later | Adapted to one common operator-approved router pool initially. Model entitlements, policy administration, and financial budgets are not introduced by this proposal. |
-| Explicit failure, bounded requests, isolation, and usage handling | Retained, without session-expiry semantics or an assumption of inference idempotency. |
-| Low initial COGS | Retained as a design objective. Remove unnecessary proxy/binding infrastructure, but account for APIM's fixed cost and router/model token charges. |
-
-Deleting the duration alone would leave an unnecessary binding service. This
-proposal removes its dependent APIs, storage, expiry rules, and upgrade-drain
-requirements as well.
-
-### 2.4 Initial scope and non-goals
-
-**In scope:** text inference, registered function tools, JSON, incremental SSE,
-one shared compatible router configuration, request-level authentication,
-credential separation, and metadata-only operational telemetry.
-
-**Not in scope:**
-
-- Session creation, model affinity, sticky workers, or same-model/version
-  guarantees across calls.
-- Provider-managed threads/conversations, stored-response retrieval, background
-  model jobs, or stream resume/replay.
-- Customer-supplied executable code or arbitrary callback URLs in inference
-  requests.
-- Model hosting on our own GPUs, unrestricted model-catalog access, audio, or
-  unqualified protocol/model features.
-- Production financial budgets, dedicated capacity, per-user authorization in
-  the model gateway, or a full customer-policy management service.
-
-Automatic selection between inference requests is intentional. Replacing a
-partially delivered stream with a different generated answer is not.
 
 ## 3. Model maintenance and service-owned routing
 
