@@ -1,4 +1,4 @@
-# POC 09: Model Router with the real MAF agent-runtime app
+# POC 09: Inventory and weather with the real MAF agent-runtime app
 
 **Status:** The isolated gateway, Model Router, and approved model-only Foundry
 project are deployed. **All four live checks pass: customer A and B, each with
@@ -6,7 +6,11 @@ JSON and SSE, real tool execution, the correct answer/source, and terminal
 `done`.** Each stream delivered 12 text deltas across 16 runtime events.
 A paced rerun passed after an earlier burst hit the router's
 10-model-requests/minute limit; incomplete streams are rejected, not counted as
-success. Twenty-seven local tests pass against the actual runtime
+success. Those figures describe the original inventory qualification.
+The new **mixed-capability live run also passes all four checks**: inventory
+JSON/SSE for A and real NWS weather JSON/SSE for B. Inventory streamed 12 text
+deltas; weather streamed 30; both executed the correct tool and ended with
+`done`. Sixty-seven local tests pass against the actual runtime
 checkout and pinned MAF packages using synthetic HTTP transport. During live
 testing, both native Functions apps ran locally on ports 7071/7072; the chat UI
 was configured for localhost without exposing an APIM key. Start your own
@@ -29,6 +33,7 @@ flowchart TB
     P --> G
     G -->|SSE without response buffering| R
     R <-->|Execute read-only lookup_stock| T[This runtime's customer inventory]
+    R <-->|Execute read-only get_weather / coordinates only| W[US National Weather Service observations]
     R -->|New inference call with context + tool result| G
     R -->|Customer-facing answer / stream| U
 ```
@@ -36,6 +41,71 @@ flowchart TB
 The service owns model selection. Every caller uses `service-default`; APIM
 rewrites it to `poc09-router`. There is no gateway transcript, session registry,
 24-hour pinning, tool execution service, or custom proxy backend.
+
+## Capabilities and customer tool execution
+
+The existing `/agents/inventory/`, `/chat`, and `/chatstream` routes are retained
+for compatibility; the agent is now **Inventory and Weather Assistant**.
+
+| Capability | Registered runtime tool | Data and behavior |
+| --- | --- | --- |
+| Inventory | `lookup_stock(sku)` | Trusted A/B fixture; the runtime calculates the two-unit reserve |
+| Weather | `get_weather(latitude, longitude)` | Real recent nearby-station observations from `api.weather.gov` |
+
+Ask **"How is the weather in Seattle?"** or
+**"How many units of A-101 can ship today?"** in the same standalone chat.
+Start a new chat session after updating from the inventory-only version so old
+refusal messages do not form part of the conversation history.
+
+There is **no city allowlist**. NWS coverage is limited to supported US areas.
+The tool accepts finite WGS84 coordinates, not arbitrary URLs or credentials.
+For unambiguous cities the agent can use known approximate city-centre
+coordinates; Seattle's coordinates are included in its instructions. There is
+no geocoding service: ambiguous or unknown locations require clarification or
+coordinates from the user. An observation at a nearby station is not a precise
+measurement at the user's address. Unsupported locations are reported as
+unavailable, not answered using model memory.
+
+The runtime makes at most three NWS reads per weather tool invocation:
+point-to-grid lookup, nearby stations, then the first station's latest
+quality-controlled observation. It uses fixed HTTPS provider URLs, does not
+follow redirects or provider-supplied URLs, sends no APIM key or chat history,
+and creates no new Azure resources. The only location data sent to NWS is the
+requested coordinates and the derived public grid/station identifiers.
+Each HTTP request has an eight-second timeout; the whole lookup has a
+20-second deadline. There are no automatic provider retries or fallback
+providers.
+
+### Weather results and explicit failures
+
+A successful result contains `status: "ok"`, Celsius temperature, optional
+conditions, station name/ID/coordinates, observation timestamp with timezone,
+and the NWS source URL. Observations over two hours old are rejected rather
+than presented as current. NWS observations can already be delayed by
+quality-control processing; the answer must show the observation timestamp.
+
+| Condition | Tool result |
+| --- | --- |
+| Unsupported NWS point | `unavailable / outside_coverage` |
+| No nearby station or latest observation | `unavailable / no_station` or `no_observation` |
+| Observation over two hours old or temperature missing | `unavailable / stale_observation` or `missing_temperature` |
+| Provider HTTP 429 or 5xx | `unavailable / provider_rate_limited` or `provider_unavailable` |
+| Timeout, connection failure, rejected request, malformed data | `error` with an explicit reason code |
+
+Failure results contain an `error` object, not a temperature or invented
+conditions. They are logged by code without provider response bodies. The
+pinned runtime marks these JSON tool calls unsuccessful. For SSE, inspect the
+correlated `tool_end.result` status: a final `done` can mean the agent completed
+an honest failure explanation, not that weather was obtained. Positive weather
+smoke checks require an actual `ok` result and an answer matching its values.
+Missing optional conditions remain unknown, not "clear skies".
+
+The model sees tool schemas and results; it never receives tool implementation
+code or provider credentials. Customer-owned tools should be registered by
+trusted runtime configuration, with their own scoped connections and
+authorization. This sample demonstrates local Python handlers, not arbitrary
+code upload or a remote HTTP/MCP connector. If a capability has no registered
+tool, the agent must explain that limitation rather than pretend to execute it.
 
 ### Important: the actual MAF protocol
 
@@ -168,6 +238,7 @@ python --version
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install `
   -e ..\..\azure-functions-agents-runtime `
+  "httpx>=0.28,<1" `
   "pytest>=9,<10" "pytest-asyncio>=1.3,<2" "ruff>=0.15,<1"
 ```
 
@@ -201,9 +272,12 @@ check A/B stock isolation, fixed model/SDK path, complete tool result continuati
 JSON, incremental Responses events, and no execution after interrupted arguments.
 They validate the actual returned stock, not just a tool-start event or synthetic
 final answer, and reject tool errors, foreign inventory, and misleading answers.
-The native HTTP handlers are also exercised for A/B JSON and SSE, including the
-exact response fields and correlation of tool-end events whose name can be null.
-The tool explicitly registers its flat input schema with `tool(schema=StockQuery)`.
+The native HTTP handlers are exercised for A/B JSON and SSE for both
+capabilities, including exact response fields and correlation of tool-end
+events whose name can be null. Weather tests cover finite/ranged coordinates,
+missing/stale data, provider errors/timeouts, redirect refusal, and failure
+results passing through the real MAF tool loop without fabricating readings.
+Both tools explicitly register their flat Pydantic input schemas with `tool`.
 The policy test checks XML/configuration shape, not live APIM policy execution.
 
 ## 3. Provision only after approval
@@ -279,14 +353,25 @@ runtime log `poc09_tool_executed` records actual tool execution; a streaming
 With both apps running against the approved new gateway:
 
 ```powershell
-.\.venv\Scripts\python.exe -B .\smoke_runtime.py --approve-paid-calls `
+.\.venv\Scripts\python.exe -B .\smoke_runtime.py --scenario mixed --approve-paid-calls `
   --output .\live-evidence.json
 ```
+
+`mixed` makes exactly four runtime requests: customer A inventory JSON/SSE,
+then customer B weather JSON/SSE. `--scenario inventory` (the default) retains
+the original A/B inventory check; `--scenario weather` tests weather JSON/SSE
+for both A/B. Do not run all scenarios in a burst against the small router.
+The weather scenario asks about Seattle without naming a tool, so the model
+must choose the weather capability itself. The acceptance prompt requests a
+compact, machine-checkable answer; normal browser answers can be conversational.
 
 [smoke_runtime.py](smoke_runtime.py) verifies successful native JSON tool results,
 customer-specific answer/source, multiple incremental text deltas, matched
 tool-start/end IDs with the actual returned stock, and
-terminal `done`. It fails on HTTP errors, missing tool evidence, cross-customer
+terminal `done`. Weather checks additionally require the actual NWS result,
+correct requested coordinates, fresh observation, source/station attribution,
+and matching temperature, conditions, and timestamp in the final answer.
+It fails on HTTP errors, missing tool evidence, cross-customer
 sources, stream errors/truncation, or an incorrect answer. It does not retry.
 It pauses **15 seconds between runtime requests** by default to avoid bursting
 against the small shared router limit. `--pause-seconds` accepts 0–300; reducing
@@ -294,12 +379,27 @@ it may cause 429s. Other callers share capacity, so pacing is not a rate-limit
 guarantee. Wait at least a minute after a throttled burst before another run.
 The ignored evidence file contains no keys or prompt/answer bodies and is also
 written on failure, with successful partial checks and `passed: false`.
-The final live run recorded `passed: true` for all four checks: A/B each had one
+The original inventory live run recorded `passed: true` for all four checks: A/B each had one
 JSON tool call, 12 streaming text deltas, and terminal `done`. Total streaming
 request times were approximately 4.45 seconds for A and 4.28 seconds for B;
 these include tool/model turns but exclude the deliberate inter-request pause.
 The requested answer format is exactly `5 units can ship; source: customer-A-inventory.`
 for A, or `0 units can ship; source: customer-B-inventory.` for B.
+
+The weather acceptance format is
+`Weather near Seattle: <temperature_c> C; conditions: <conditions>; observed: <observed_at>; station: <id>; source: US National Weather Service.`
+The actual weather is fetched at execution time; no fixed temperature is an
+acceptance fixture for live testing.
+
+The latest `mixed` run recorded `passed: true` for all four checks, with one
+actual tool call per request. A inventory streamed 12 text deltas across 16
+events in approximately 4.98 seconds; B weather streamed 30 text deltas across
+34 events in approximately 5.32 seconds. Both ended in `done`. Weather answers
+matched the actual NWS temperature, conditions, observation timestamp, and
+station returned by the tool. These measurements exclude deliberate pauses
+between runtime requests and do not establish the APIM forwarding benchmark.
+Provider-failure handling was verified locally with synthetic responses, not
+by intentionally disrupting the live provider.
 
 For a single manual streaming request:
 
@@ -336,4 +436,5 @@ hosting the agent app. No production isolation or reliability claim is made.
 - [APIM SSE tier, buffering, diagnostics, and caching guidance](https://learn.microsoft.com/en-us/azure/api-management/how-to-server-sent-events)
 - [Model Router supported pool and REST deployment configuration](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/model-router)
 - [Responses API model routing](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/responses-model-routing)
+- [NWS API usage, observations, and data delays](https://www.weather.gov/documentation/services-web-api)
 - [Azure Retail Prices API](https://prices.azure.com/api/retail/prices)

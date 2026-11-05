@@ -2,7 +2,7 @@
 name = "poc09-model-router-runtime-sample"
 version = "0.1.0"
 requires-python = ">=3.13"
-dependencies = ["azurefunctions-agents-runtime"]
+dependencies = ["azurefunctions-agents-runtime", "httpx>=0.28,<1"]
 
 [dependency-groups]
 dev = ["pytest>=9,<10", "pytest-asyncio>=1.3,<2", "ruff>=0.15,<1"]

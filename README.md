@@ -45,8 +45,13 @@ fixed protocol placeholder and operator-controlled customer routing.
 **Incremental SSE streaming per inference call is a mandatory acceptance
 requirement for both POCs**, with non-streaming JSON also supported. The runtime
 owns any customer-facing stream spanning tools and multiple model calls.
-POC 08 is not live-qualified. POC 09's sample has 27 local tests and four passing
-live checks (A/B JSON and SSE), including tool outputs and incremental deltas.
+POC 08 is not live-qualified. POC 09's sample has 67 local tests and four passing
+original inventory live checks (A/B JSON and SSE), including tool outputs and
+incremental deltas. It now also registers a real NWS weather tool with explicit
+coverage, freshness, and provider-failure handling. A further four-request
+mixed live run passes inventory JSON/SSE for A and real weather JSON/SSE for B,
+including actual tool results and terminal completion. See its runbook for
+commands, NWS coverage/geocoding limitations, and the evidence boundary.
 The small router has a shared 10-model-requests/minute limit; the smoke driver
 paces calls. These results do not prove the separate 250 ms APIM forwarding gate,
 served-model attribution, cancellation/billing, or production reliability.

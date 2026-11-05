@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import xml.etree.ElementTree as ET
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -17,9 +18,114 @@ sys.path.insert(0, str(ROOT / "agent-app"))
 sys.path.insert(0, str(ROOT))
 
 from tools.inventory import StockQuery, stock_result  # noqa: E402
+from tools.weather import WeatherQuery, read_weather  # noqa: E402
 
 import smoke_runtime  # noqa: E402
-from smoke_runtime import verify_answer, verify_stock_result  # noqa: E402
+from smoke_runtime import (  # noqa: E402
+    verify_answer,
+    verify_stock_result,
+    verify_weather_answer,
+    verify_weather_result,
+)
+
+NOW = datetime.now(UTC).replace(microsecond=0)
+
+
+def nws_response(request, case="ok"):
+    assert request.url.host == "api.weather.gov"
+    assert "api-key" not in request.headers and "authorization" not in request.headers
+    assert "HostedSkillsPOC09" in request.headers["user-agent"]
+    if case == "timeout":
+        raise httpx.ReadTimeout("Synthetic timeout.", request=request)
+    if case == "connection":
+        raise httpx.ConnectError("Synthetic connection failure.", request=request)
+    statuses = {"coverage": 404, "rate_limit": 429, "denied": 403, "unavailable": 503, "redirect": 302}
+    if case in statuses:
+        return httpx.Response(statuses[case], request=request, headers={"location": "https://unapproved.invalid/"})
+    if case == "malformed":
+        return httpx.Response(200, request=request, content=b"{")
+    if request.url.path.startswith("/points/"):
+        assert request.url.path == "/points/47.6062,-122.3321"
+        return httpx.Response(200, request=request, json={"properties": {
+            "gridId": "../unapproved" if case == "invalid_grid" else "SEW", "gridX": 125, "gridY": 68,
+            "observationStations": "https://unapproved.invalid/do-not-follow",
+        }})
+    if request.url.path == "/gridpoints/SEW/125,68/stations":
+        features = [{
+            "properties": {
+                "stationIdentifier": "../bad" if case == "invalid_station" else "KBFI",
+                "name": "Boeing Field",
+            },
+            "geometry": {"type": "Point", "coordinates": [-122.3147, 47.54548]},
+        }]
+        return httpx.Response(200, request=request, json={"features": [] if case == "no_station" else features})
+    assert request.url.path == "/stations/KBFI/observations/latest"
+    assert request.url.params["require_qc"] == "true"
+    if case == "no_observation":
+        return httpx.Response(404, request=request)
+    timestamp = NOW
+    if case == "stale":
+        timestamp -= timedelta(hours=2, seconds=1)
+    if case == "future":
+        timestamp += timedelta(minutes=6)
+    temperature = {"missing_temperature": None, "zero": 0, "negative": -3.2}.get(case, 11)
+    return httpx.Response(200, request=request, json={"properties": {
+        "timestamp": timestamp.replace(tzinfo=None).isoformat() if case == "naive_timestamp" else timestamp.isoformat(),
+        "temperature": {"unitCode": "wmoUnit:degF" if case == "wrong_unit" else "wmoUnit:degC", "value": temperature},
+        "textDescription": None if case == "missing_conditions" else "Mostly Cloudy",
+    }})
+
+
+@pytest.mark.parametrize(("latitude", "longitude"), [
+    (91, 0), (0, -181), (float("nan"), 0), (0, float("inf")), (True, 0), ("47.6", -122.3),
+])
+def test_weather_rejects_invalid_coordinates(latitude, longitude):
+    with pytest.raises(ValidationError):
+        WeatherQuery(latitude=latitude, longitude=longitude)
+
+
+def test_weather_does_not_accept_urls_or_customer_scope():
+    with pytest.raises(ValidationError):
+        WeatherQuery(latitude=47.6, longitude=-122.3, url="https://unapproved.invalid", customer="B")
+
+
+@pytest.mark.parametrize(("case", "status", "code"), [
+    ("ok", "ok", None), ("zero", "ok", None), ("negative", "ok", None),
+    ("missing_conditions", "ok", None),
+    ("coverage", "unavailable", "outside_coverage"), ("no_station", "unavailable", "no_station"),
+    ("no_observation", "unavailable", "no_observation"),
+    ("stale", "unavailable", "stale_observation"), ("future", "error", "invalid_observation_time"),
+    ("missing_temperature", "unavailable", "missing_temperature"),
+    ("timeout", "error", "provider_timeout"), ("connection", "error", "provider_connection_error"),
+    ("rate_limit", "unavailable", "provider_rate_limited"),
+    ("denied", "error", "provider_http_error"), ("unavailable", "unavailable", "provider_unavailable"),
+    ("redirect", "error", "provider_http_error"),
+    ("malformed", "error", "invalid_provider_response"), ("invalid_grid", "error", "invalid_provider_response"),
+    ("invalid_station", "error", "invalid_provider_response"),
+    ("wrong_unit", "error", "invalid_provider_response"), ("naive_timestamp", "error", "invalid_provider_response"),
+])
+async def test_weather_provider_outcomes(case, status, code, caplog):
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return nws_response(request, case)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle), follow_redirects=False) as client:
+        result = await read_weather(client, WeatherQuery(latitude=47.6062, longitude=-122.3321), now=NOW)
+    assert result["status"] == status
+    assert result["source"] == "US National Weather Service"
+    assert 1 <= len(requests) <= 3
+    if code:
+        assert result["error"]["code"] == code
+        assert code in caplog.text
+        assert "temperature_c" not in result and "conditions" not in result
+    else:
+        assert result["temperature_c"] == {"zero": 0, "negative": -3.2}.get(case, 11)
+        assert result["station"]["id"] == "KBFI"
+        assert result["observed_at"] == NOW.isoformat()
+        assert result["conditions"] == (None if case == "missing_conditions" else "Mostly Cloudy")
+        verify_weather_result(json.dumps(result))
 
 
 @pytest.mark.parametrize("fail", [False, True])
@@ -29,7 +135,7 @@ async def test_smoke_persists_honest_partial_or_complete_evidence(monkeypatch, t
         "smoke_runtime.py", "--approve-paid-calls", "--output", str(output), "--pause-seconds", "0",
     ])
 
-    async def verify(client, url, customer, checks, pause_seconds):
+    async def verify(client, url, customer, checks, pause_seconds, scenario):
         checks.append({"customer": customer, "mode": "json", "passed": True})
         if fail:
             raise RuntimeError("Synthetic incomplete stream.")
@@ -138,19 +244,34 @@ class ProviderStream(httpx.AsyncByteStream):
             raise httpx.ReadError("Synthetic interrupted provider stream.")
 
 
-def completion(body, customer):
+def completion(body, customer, *, weather_case=None):
     has_result = any(item.get("type") == "function_call_output" for item in body["input"])
     if has_result:
         tool_output = next(item for item in body["input"] if item.get("type") == "function_call_output")
-        assert json.loads(tool_output["output"]) == stock_result("A-101", customer)
+        if weather_case is not None:
+            weather = json.loads(tool_output["output"])
+            if weather_case == "ok":
+                verified = verify_weather_result(tool_output["output"])
+                answer = (
+                    f"Weather near Seattle: {verified['temperature_c']} C; conditions: {verified['conditions']}; "
+                    f"observed: {verified['observed_at']}; station: {verified['station_id']}; source: US National Weather Service."
+                )
+            else:
+                assert weather["status"] in {"unavailable", "error"} and weather["source"] == "US National Weather Service"
+                answer = f"Weather unavailable: {weather['error']['message']}"
+        else:
+            assert json.loads(tool_output["output"]) == stock_result("A-101", customer)
+            answer = f"{5 if customer == 'A' else 0} units can ship; source: customer-{customer}-inventory."
         output = [{
             "id": "msg-stock-1", "type": "message", "role": "assistant", "status": "completed",
-            "content": [{"type": "output_text", "text": f"{5 if customer == 'A' else 0} units can ship; source: customer-{customer}-inventory.", "annotations": []}],
+            "content": [{"type": "output_text", "text": answer, "annotations": []}],
         }]
     else:
         output = [{
             "id": "fc-stock-1", "call_id": "call-stock-1", "type": "function_call",
-            "name": "lookup_stock", "arguments": '{"sku":"A-101"}', "status": "completed",
+            "name": "lookup_stock" if weather_case is None else "get_weather",
+            "arguments": '{"sku":"A-101"}' if weather_case is None else '{"latitude":47.6062,"longitude":-122.3321}',
+            "status": "completed",
         }]
     return {
         "id": "resp-fixture", "object": "response", "created_at": 1793804400,
@@ -173,9 +294,10 @@ def stream_chunks(result, interrupted=False):
         {"type": "response.output_item.added", "output_index": 0, "item": added_item},
     ]
     if item["type"] == "function_call":
+        midpoint = len(item["arguments"]) // 2
         events.extend([
-            {"type": "response.function_call_arguments.delta", "item_id": item["id"], "output_index": 0, "delta": '{"sku":'},
-            {"type": "response.function_call_arguments.delta", "item_id": item["id"], "output_index": 0, "delta": '"A-101"}'},
+            {"type": "response.function_call_arguments.delta", "item_id": item["id"], "output_index": 0, "delta": item["arguments"][:midpoint]},
+            {"type": "response.function_call_arguments.delta", "item_id": item["id"], "output_index": 0, "delta": item["arguments"][midpoint:]},
             {"type": "response.function_call_arguments.done", "item_id": item["id"], "output_index": 0, "arguments": item["arguments"]},
         ])
     else:
@@ -216,10 +338,13 @@ def runtime_app(monkeypatch, customer):
     return module.app
 
 
-def install_transport(monkeypatch, customer, *, interrupted=False):
-    observed = {"requests": [], "terminal_sent": False}
+def install_transport(monkeypatch, customer, *, interrupted=False, weather_case=None):
+    observed = {"requests": [], "terminal_sent": False, "weather_requests": []}
 
     async def send(client, request, *, stream=False, **kwargs):
+        if request.url.host == "api.weather.gov":
+            observed["weather_requests"].append(request)
+            return nws_response(request, weather_case or "ok")
         body = json.loads(request.content)
         assert request.url.host == "poc09.example.invalid"
         assert request.url.path == "/llm/openai/v1/responses"
@@ -227,16 +352,20 @@ def install_transport(monkeypatch, customer, *, interrupted=False):
         assert body["model"] == "service-default"
         assert body["store"] is False
         assert "Reserve two units of every SKU" in json.dumps(body)
+        assert "If a tool is absent, fails" in json.dumps(body)
         inventory_tool = next(tool for tool in body["tools"] if tool["name"] == "lookup_stock")
         assert set(inventory_tool["parameters"]["properties"]) == {"sku"}
         assert inventory_tool["parameters"]["additionalProperties"] is False
+        weather_tool = next(tool for tool in body["tools"] if tool["name"] == "get_weather")
+        assert set(weather_tool["parameters"]["properties"]) == {"latitude", "longitude"}
+        assert weather_tool["parameters"]["additionalProperties"] is False
         assert set(body) <= {
             "model", "input", "instructions", "tools", "tool_choice", "stream", "store",
             "temperature", "top_p", "max_output_tokens", "parallel_tool_calls", "text",
             "reasoning", "include", "metadata", "background", "truncation",
         }
         observed["requests"].append(body)
-        result = completion(body, customer)
+        result = completion(body, customer, weather_case=weather_case)
         if body.get("stream"):
             return httpx.Response(
                 200, request=request, headers={"content-type": "text/event-stream"},
@@ -246,6 +375,50 @@ def install_transport(monkeypatch, customer, *, interrupted=False):
 
     monkeypatch.setattr(httpx.AsyncClient, "send", send)
     return observed
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("case", ["ok", "coverage", "unavailable", "timeout"])
+async def test_native_runtime_weather_tool_round_trip(monkeypatch, case, streaming):
+    app = runtime_app(monkeypatch, "A")
+    observed = install_transport(monkeypatch, "A", weather_case=case)
+    events = []
+
+    @app.hosted_skill(arg_name="skill", agent_name="inventory")
+    async def invoke(skill: HostedSkill):
+        if streaming:
+            async for event in skill.stream("How is the weather near Seattle?"):
+                events.append(event.to_dict())
+            return None
+        return await skill.run("How is the weather near Seattle?")
+
+    result = await invoke()
+    assert len(observed["requests"]) == 2
+    assert len(observed["weather_requests"]) == (3 if case == "ok" else 1)
+    if streaming:
+        assert events[-1]["type"] == "done"
+        start = next(event for event in events if event["type"] == "tool_start")
+        end = next(event for event in events if event["type"] == "tool_end")
+        assert start["tool_name"] == "get_weather" and start["tool_call_id"] == end["tool_call_id"]
+        tool_result = end["result"]
+        answer = "".join(event.get("content") or "" for event in events if event["type"] == "delta")
+    else:
+        assert result.tool_calls[0]["tool_name"] == "get_weather"
+        assert result.tool_calls[0]["success"] is (case == "ok")
+        tool_result = result.tool_calls[0]["result"]
+        answer = result.content
+    continuation = next(item for item in observed["requests"][1]["input"] if item.get("type") == "function_call_output")
+    assert continuation["call_id"] == "call-stock-1"
+    assert continuation["output"] == tool_result
+    if case == "ok":
+        verify_weather_answer(answer, tool_result)
+    else:
+        payload = json.loads(tool_result)
+        assert payload["error"]["code"] == {
+            "coverage": "outside_coverage", "unavailable": "provider_unavailable", "timeout": "provider_timeout",
+        }[case]
+        assert answer.startswith("Weather unavailable:")
+        assert "temperature_c" not in payload
 
 
 @pytest.mark.parametrize("name", ["AZURE_OPENAI_BASE_URL", "OPENAI_BASE_URL"])
@@ -341,16 +514,19 @@ async def test_native_runtime_does_not_execute_interrupted_arguments(monkeypatch
 
 @pytest.mark.parametrize("customer", ["A", "B"])
 @pytest.mark.parametrize("streaming", [False, True])
-async def test_native_http_endpoint_shapes(monkeypatch, customer, streaming):
+@pytest.mark.parametrize("scenario", ["inventory", "weather"])
+async def test_native_http_endpoint_shapes(monkeypatch, customer, streaming, scenario):
     app = runtime_app(monkeypatch, customer)
-    observed = install_transport(monkeypatch, customer)
+    observed = install_transport(monkeypatch, customer, weather_case="ok" if scenario == "weather" else None)
     suffix = "chatstream" if streaming else "chat"
     function = next(function for function in app.get_functions() if function.get_function_name() == f"agent_inventory_builtin_{suffix}")
 
     async def receive():
         return {
             "type": "http.request",
-            "body": json.dumps({"prompt": "How many units of A-101 can ship?"}).encode(),
+            "body": json.dumps({
+                "prompt": "How is the weather near Seattle?" if scenario == "weather" else "How many units of A-101 can ship?",
+            }).encode(),
             "more_body": False,
         }
 
@@ -364,9 +540,12 @@ async def test_native_http_endpoint_shapes(monkeypatch, customer, streaming):
     assert response.status_code == 200
     if not streaming:
         result = json.loads(response.body)
-        verify_answer(result["response"], customer)
         assert result["tool_calls"][0]["success"] is True
-        verify_stock_result(result["tool_calls"][0]["result"], customer)
+        if scenario == "weather":
+            verify_weather_answer(result["response"], result["tool_calls"][0]["result"])
+        else:
+            verify_answer(result["response"], customer)
+            verify_stock_result(result["tool_calls"][0]["result"], customer)
     else:
         assert response.headers["content-type"].startswith("text/event-stream")
         events = []
@@ -376,10 +555,13 @@ async def test_native_http_endpoint_shapes(monkeypatch, customer, streaming):
         assert events[-1]["type"] == "done"
         start = next(event for event in events if event["type"] == "tool_start")
         end = next(event for event in events if event["type"] == "tool_end")
-        assert start["tool_name"] == "lookup_stock"
+        assert start["tool_name"] == ("get_weather" if scenario == "weather" else "lookup_stock")
         assert start["tool_call_id"] == end["tool_call_id"]
-        verify_stock_result(end["result"], customer)
         deltas = [event["content"] for event in events if event["type"] == "delta"]
         assert len(deltas) >= 2
-        verify_answer("".join(deltas), customer)
+        if scenario == "weather":
+            verify_weather_answer("".join(deltas), end["result"])
+        else:
+            verify_stock_result(end["result"], customer)
+            verify_answer("".join(deltas), customer)
     assert len(observed["requests"]) == 2
