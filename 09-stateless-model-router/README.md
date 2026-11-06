@@ -21,8 +21,8 @@ inventory; email and automatic timer execution are disabled.
 **Date:** 2026-11-04.
 **Baseline:** [POC 08: service-selected named model through APIM](../08-stateless-ai-gateway/README.md).
 
-For the standalone proposal derived from the Customer Model Service problem and
-requirements, see [POC 09 proposal: architecture, API contracts, and stateless chat/streaming](proposal.md).
+For the concise stateless alternative to the Customer Model Service requirements,
+see [POC 09 proposal: contracts, required agent-runtime changes, and gateway-only model access](proposal.md).
 
 ## 1. Goal
 
