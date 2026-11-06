@@ -9,7 +9,7 @@
 Customers running agents with MAF or Copilot SDK need governed model access
 **WITHOUT** managing provider endpoints or credentials. The agent-runtime must
 retain conversation context and tool execution while the service selects a
-compatible model for each inference.
+compatible model for each model interaction.
 
 ## 2. Requirements
 
@@ -42,13 +42,13 @@ AI Gateway is APIM's governance capability, not a separate gateway service.
 | --- | --- | --- | --- |
 | [**Recommended**]APIM / AI Gateway + Model Router + models | APIM forwards to Model Router, which selects an approved underlying model per model interaction onbehalf of agent-runtime | APIM policies, router configuration/subset, access, quotas and evaluations | Less custom routing code, but an additional routing meter. production gates pending. |
 | AI Gateway + models only | APIM maps the alias to a fixed approved model or uses explicit backend-routing/load-balancing policies | APIM policies and approved named model deployments/backends, access, quotas and evaluations | **Alternative / POC 08 baseline.** No Model Router or routing Function charge. Selection is fixed or policy-defined; qualify the exact API/SDK path. |
-| APIM + Function App routing + models | APIM calls a routing-only Function for an approved backend ID, validates it, then forwards inference to the model | APIM, named model deployments, Function hosting/rules, identity, CI, monitoring and rollback | **Considered, not implemented.** Bespoke rules and potential routing-meter savings; additional Function cost, latency and operational ownership. Routing quality needs independent evaluation. |
+| APIM + Function App routing + models | APIM calls a routing-only Function for an approved backend ID, validates it, then forwards model interaction to the model | APIM, named model deployments, Function hosting/rules, identity, CI, monitoring and rollback | **Considered, not implemented.** Bespoke rules and potential routing-meter savings; additional Function cost, latency and operational ownership. Routing quality needs independent evaluation. |
 
-All three retain `service-default`, runtime-owned history/tools and APIM-only
-model access. The Function row is routing-only, not an inference/streaming proxy;
+All three retain default model, runtime-owned history/tools and APIM-only
+model access. The Function row is routing-only, not an model interation/streaming proxy;
 both Function variants are covered in the [cost estimates](#traffic-based-monthly-estimate).
-The Capacity Manager below is a shared control-plane component for all three
-approaches, independent of whether model selection uses Model Router or custom rules.
+The Capacity Manager below is a shared **control-plane component for all three
+approaches**, independent of whether model selection uses Model Router or custom rules.
 
 ### 4.2 Selected POC 09 design
 
@@ -64,7 +64,7 @@ flowchart TB
     end
     U["User / application"] --> R["Agent-runtime / MAF"]
     R -->|"Authorized tool execution"| T["Customer tools and data"]
-    subgraph MS["Model Service: stateless inference boundary"]
+    subgraph MS["Model Service: stateless model interaction boundary"]
         direction TB
         G["APIM / AI Gateway"] --> P["Foundry project Responses endpoint"]
         P --> MR["Foundry Model Router"]
@@ -76,7 +76,7 @@ flowchart TB
 ```
 
 Solid arrows show forward requests and control-plane inputs; dashed arrows are
-management-plane updates, not inference calls. Responses/tool results return over
+management-plane updates, not model interaction calls. Responses/tool results return over
 their originating calls, and telemetry collection arrows are omitted to keep the
 diagram top-down. The Capacity Manager is planned, not deployed or live-qualified.
 
@@ -84,14 +84,14 @@ diagram top-down. The Capacity Manager is planned, not deployed or live-qualifie
 | --- | --- |
 | Agent-runtime | User/conversation authorization, history and summarization, tool execution, agent loop, customer-facing JSON/SSE |
 | APIM / AI Gateway | Authenticate each request, derive trusted customer identity, validate/limit requests, map the fixed alias, separate credentials, forward incrementally |
-| Foundry Model Router | Select an eligible model per inference from the operator-approved subset; no same-model continuation guarantee |
+| Foundry Model Router | Select an eligible model per model interaction from the operator-approved subset; no same-model continuation guarantee |
 | Azure Monitor | Metadata-only demand, usage, latency and failure signals; alerts without prompts or tool results |
 | Capacity Manager - background Function App | Check demand and available quota; apply supported capacity changes within approved bounds; verify outcomes and report failures |
 | Service operator | Versioned configuration, model qualification, access/network controls, approved budgets/scale bounds, quota requests and change approval |
 
-The inference boundary has **no custom proxy Function App** and owns no conversation,
+The model interaction boundary has **no custom proxy Function App** and owns no conversation,
 binding or tool execution. The separate Capacity Manager performs management work only.
-Every inference resends context; runtime sessions remain runtime-owned.
+Every model interaction resends context; runtime sessions remain runtime-owned.
 API contracts are in the [FAQ](#75-what-are-the-api-contracts).
 
 The runtime sends approved local/MCP tool schemas to the model; the model requests calls but never executes tools or receives their credentials.
@@ -102,14 +102,14 @@ Model Router and Capacity Manager do not execute tools; remote MCP connections r
 
 - Run on a schedule or monitoring event, not once per model call. Read demand,
   current allocations and available quota; update only supported gateway/model
-  capacity settings with a scoped management-plane identity, not inference credentials.
+  capacity settings with a scoped management-plane identity, not model interaction credentials.
 - Enforce approved minimum/maximum capacity, budgets, cooldowns and in-flight
   request headroom. Do not automatically change the approved model subset or
   processing regions. Quota increases require provider approval and may not be immediate.
 - Verify changes before reporting success. On stale telemetry or failed updates,
   log/alert and retain the last approved configuration; APIM continues enforcing
   admission limits and returns explicit throttling rather than bypassing policy.
-- Keep this controller outside the inference path: no conversation storage, tool
+- Keep this controller outside the model interaction path: no conversation storage, tool
   execution, model calls or SSE forwarding. Scaling the Function scales the
   controller, not the underlying models. Microsoft operates managed model serving.
 
@@ -153,14 +153,14 @@ Session IDs / optional `x-ms-session-id` never authorize access or pin models.
 | --- | --- |
 | Body / output | At most 1 MiB; requested output 1-256 tokens, default 256; no silent context truncation |
 | Capacity | Per-key pilot: 12 calls/minute, 200/hour; shared router: 10 requests and 10,000 tokens/minute at capacity 10; no fairness or dollar-cap promise |
-| Time / retries | Target: 120-second whole-turn deadline including tools/delegation; each inference uses remaining budget; 30-second upstream-event idle limit; explicitly bounded attempts, no replay after partial output |
+| Time / retries | Target: 120-second whole-turn deadline including tools/delegation; each model interaction uses remaining budget; 30-second upstream-event idle limit; explicitly bounded attempts, no replay after partial output |
 | Gateway forwarding | Pilot `forward-request timeout="120" buffer-response="false"`; its timeout is for backend **headers**, not total stream lifetime; absolute/idle enforcement requires qualification |
 
 APIM alone uses managed identity: project Responses uses the `https://ai.azure.com`
 audience / scoped Foundry User role; account Chat Completions uses
 `https://cognitiveservices.azure.com` / Cognitive Services OpenAI User.
 APIM strips caller credentials and owns backend paths/API versions.
-Enforce RBAC/network/egress: no runtime provider keys, Foundry inference role, or direct-model reachability.
+Enforce RBAC/network/egress: no runtime provider keys, Foundry model interaction role, or direct-model reachability.
 **Required enforcement, not demonstrated by the public-network pilot.**
 
 Version and requalify router configuration before changes; no 24-hour binding drain.
@@ -180,7 +180,7 @@ Recorded POC results, not a new test run or proof of these gates:
 | Statelessness / portability | Fresh worker/connection continues from resent history; no binding lookup; qualify every candidate and observe a real model change before claiming cross-model continuation |
 | JSON / tools / protocols | Each exposed API and exact SDK passes native JSON/SSE, complete authorized tools, matching IDs, explicit failures and correct terminal markers |
 | Incremental delivery / isolation | Through real APIM, at least five controlled events 500 ms apart, each arriving within 250 ms of calibrated emission; interleave customers without cross-customer events |
-| Capacity Manager - planned | Verify demand/quota checks, approved scale bounds/budgets, cooldowns, change confirmation, stale-telemetry/update failures and control-plane outages; no inference calls or policy bypass |
+| Capacity Manager - planned | Verify demand/quota checks, approved scale bounds/budgets, cooldowns, change confirmation, stale-telemetry/update failures and control-plane outages; no model interaction calls or policy bypass |
 | Failure / hardening | Test late errors, truncated EOF, disconnects, absolute/idle deadlines, cleanup and retry budgets; complete nested/context validation, `no-store`, consistent safe errors and production user isolation |
 
 Detailed qualification remains in the [design](README.md).
@@ -205,7 +205,7 @@ does not pass the quality/cost/latency gates.
 runner over one fixed model, not an intelligent model selector.
 A custom router is not inherently wrong, but adds hosting, availability,
 configuration and maintenance ownership. A routing-only Function avoids most
-proxy/SSE work; a full inference proxy does not.
+proxy/SSE work; a full model interaction proxy does not.
 Keep orchestration in the runtime. Consider custom routing only when bespoke
 rules or measured savings justify ownership cost; see the [cost comparison](#traffic-based-monthly-estimate).
 
@@ -220,11 +220,11 @@ rules or measured savings justify ownership cost; see the [cost comparison](#tra
 
 Microsoft operates the underlying managed routing/model-serving infrastructure.
 No new routing Function App, binding store, separate AI Gateway service or model GPU fleet is required.
-The planned Capacity Manager is a separate background Function, not a per-inference router or proxy.
+The planned Capacity Manager is a separate background Function, not a per-model interaction router or proxy.
 
 ### 7.4 How do we scale models when traffic grows?
 
-- Size for inference requests/minute, tokens/minute and concurrent SSE connections;
+- Size for model interaction requests/minute, tokens/minute and concurrent SSE connections;
   tool loops and delegation multiply model calls per user turn.
 - The [Capacity Manager](#43-capacity-manager-boundaries) checks demand, current
   allocations and available quota, then applies supported model/gateway changes
@@ -323,7 +323,7 @@ The target also requires `Cache-Control: no-store` (**not yet set by the pilot p
 - Forward incrementally with `buffer-response="false"`; no response/semantic cache, body diagnostics at API or inherited scopes, or outbound body policies that buffer SSE.
 - Parse UTF-8/SSE framing across transport chunks; preserve event order and final usage, including usage-only Chat chunks.
 - Native errors, `response.failed` / `response.incomplete`, cancellation, or EOF without successful termination mean failure. Never replay partial output or manufacture a success marker.
-- Assemble tool calls by IDs and execute only after successful inference completion. The runtime can hold one customer-facing stream across multiple inference/tool cycles.
+- Assemble tool calls by IDs and execute only after successful model interaction completion. The runtime can hold one customer-facing stream across multiple model interaction/tool cycles.
 
 Target pre-stream error envelope:
 
@@ -344,12 +344,12 @@ No binding-conflict/expiry, resume, or exactly-once guarantees.
 
 ### 7.6 Would a lightweight routing Function reduce cost, and how would we maintain it?
 
-**Potentially, for routing-only rules, not necessarily for an inference proxy.**
+**Potentially, for routing-only rules, not necessarily for an model interaction proxy.**
 This is an optional cost comparison, not a change to the selected POC 09 architecture
 or approval to create resources.
 
 - **Routing-only:** APIM calls a short-lived Function for an approved backend ID,
-  validates the ID, then forwards inference/SSE itself. The Function never calls
+  validates the ID, then forwards model interaction/SSE itself. The Function never calls
   Foundry or holds the stream. Use deterministic rules, not an extra LLM classifier.
 - **Streaming proxy:** runtime -> APIM -> Function -> protected APIM model API ->
   approved model. The Function stays active while awaiting/forwarding the response;
@@ -409,7 +409,7 @@ storage, logging, networking, runtime/Capacity Manager hosting, tools, retries a
 no caching discounts. Cold starts, always-ready/Premium hosting, additional APIM
 capacity and different token/model mixes change the result. Developer APIM has
 no production SLA; traffic requires separate quota/load qualification.
-The Function columns price per-inference routing/proxy work, not the shared
+The Function columns price per-model interaction routing/proxy work, not the shared
 background Capacity Manager. Its hosting and monitoring cost remains unestimated.
 Sources: [Azure retail prices](https://prices.azure.com/api/retail/prices),
 [Functions pricing and free grants](https://azure.microsoft.com/en-us/pricing/details/functions/),
@@ -420,7 +420,7 @@ and [Flex instance sizes/billing](https://learn.microsoft.com/en-us/azure/azure-
 **Confirmed workload:** each app/user consumes 1 billion **total input + output
 tokens per month**. Retain the previous 10:1 input/output ratio: approximately
 909.09 million input and 90.91 million output tokens per app. At 2,200 tokens
-per inference, that is approximately 454,545 model calls per app/month.
+per model interaction, that is approximately 454,545 model calls per app/month.
 Retain the same model mix, Function durations and retail rates above.
 
 These are clients of a shared service, **not one APIM or Model Router deployment
@@ -444,7 +444,7 @@ grants are shared per eligible subscription, not multiplied by 10,000 users.
 Fixed-model columns are pricing alternatives, not quality-equivalent results.
 
 At **10,000 apps**, the 80/20 mix contributes **$9,163,636.36/month in model
-inference**. Model Router adds **$1,272,727.27/month**; a 1-second routing-only
+model interaction**. Model Router adds **$1,272,727.27/month**; a 1-second routing-only
 Function adds approximately **$60,909.09/month**. The difference is approximately
 **$1,211,818.18/month**, before different gateway/platform costs, operational
 ownership and validation that custom rules deliver acceptable quality.
@@ -453,9 +453,9 @@ The 30-second streaming proxy adds approximately $1,774,545.45/month instead.
 **Capacity is a separate prerequisite, not included in these arithmetic estimates.**
 Using a 730-hour month, 10,000 apps imply approximately:
 
-- 4.545 billion inference requests/month, averaging 1,730 requests/second
+- 4.545 billion model interaction requests/month, averaging 1,730 requests/second
   (103,778 requests/minute) and 228 million combined tokens/minute.
-- 52,000 simultaneous inference connections if all calls stream for 30 seconds.
+- 52,000 simultaneous model interaction connections if all calls stream for 30 seconds.
 - 1,730 concurrent routing Function executions at the assumed 1-second duration;
   do not assume one Function App or default regional limits cover that demand.
 
