@@ -25,7 +25,8 @@ compatible model for each model interaction.
 - Customer-selected models, session bindings or expiry.
 - Model-service conversation storage, agent hosting/orchestration or tool execution.
 - Stream resume or replay.
-- Customer cost estimation and support
+- Customer cost estimation and support.
+- Customer Policy and Contraol Plane Changes.
 
 ## 4. Design and ownership
 
@@ -113,6 +114,16 @@ Model Router and Capacity Manager do not execute tools; remote MCP connections r
   execution, model calls or SSE forwarding. Scaling the Function scales the
   controller, not the underlying models. Microsoft operates managed model serving.
 
+### 4.4 Resiliency and retry
+
+- **Agent-runtime (model client):** Retry transient individual model calls only before model output, within an attempt/deadline budget; honor `Retry-After` and jitter. Do not retry invalid requests or denied access.
+- **Agent-runtime (retry owner) + APIM configuration:** Keep one retry owner; do not stack SDK/APIM retries or restart the entire agent/tool loop.
+- **Agent-runtime (completion) + APIM (forwarding):** Validate JSON/SSE completion before success/`done`; mark broken streams incomplete. Never replay partial output or fail over mid-stream.
+- **Agent-runtime:** Enforce whole-turn and stream-idle deadlines; propagate cancellation and clean up connections. Cancellation is not rollback or zero-charge assurance.
+- **Agent-runtime + tool/MCP services:** Preserve authorized runtime checkpoints and completed tool results; require idempotency/reconciliation for side effects. The model service remains stateless.
+- **APIM / AI Gateway:** Configure native APIM limits/circuit breakers and approved backend failover; no extra resilience app or direct Foundry fallback.
+- **Azure Monitor + Capacity Manager + Service operator:** Monitor failures/usage; Capacity Manager handles capacity, not retries. Test outages, truncation and duplicate actions; regional gateway/model redundancy requires separate approval.
+
 ## 5. Changes needed in the agent-runtime
 
 **Pilot:** existing MAF works through APIM; no new provider, orchestrator, routes, or history store.
@@ -146,6 +157,7 @@ JSON: `response`, `model`, `tool_calls`, optional usable `session_id`.
 Runtime SSE uses `session`, `tool_start`, `tool_end`, `delta`, `done` / `error`;
 correlate by `tool_call_id`. `done` ends the loop, not proof of tool success.
 Session IDs / optional `x-ms-session-id` never authorize access or pin models.
+See the [customer-interaction FAQ](#76-how-does-a-customer-interact-with-the-agent-runtime).
 
 ## 6. Gateway controls and acceptance
 
@@ -342,7 +354,56 @@ Preserve safe provider errors/retry guidance; uniform envelopes remain hardening
 After SSE headers, status cannot change: native errors or truncated EOF mean failure.
 No binding-conflict/expiry, resume, or exactly-once guarantees.
 
-### 7.6 Would a lightweight routing Function reduce cost, and how would we maintain it?
+### 7.6 How does a customer interact with the agent-runtime?
+
+The customer uses the **agent-runtime API**, not Foundry or the model-service API
+directly. The runtime operator configures one backend service connection and
+approved agents/tools; model deployments, selection and provider credentials stay
+service-owned. The browser never holds the APIM subscription key.
+
+1. The client authenticates to the runtime and sends a prompt to the agent.
+2. The runtime loads authorized history and sends instructions, context and
+   approved tool schemas through APIM using `service-default` and its backend-only
+   customer APIM key. The current MAF path uses `/llm/openai/v1/responses`.
+3. If a model requests a tool, the runtime validates/authorizes and executes the
+   local handler or MCP call, then sends full context and matching results through
+   APIM again. A later model call may select a different eligible model.
+4. The runtime returns an answer as JSON or one customer-facing SSE stream spanning
+   the agent/tool loop. The Capacity Manager remains background control-plane work.
+
+Example using the sample's runtime endpoint (authentication headers omitted;
+use the deployment's configured runtime authentication):
+
+```http
+POST /agents/inventory/chat
+Content-Type: application/json
+```
+
+```json
+{"prompt": "How many units of A-101 can ship today?"}
+```
+
+Illustrative HTTP 200 JSON subset; the full response also includes `model` and
+`tool_calls`. A usable session reference is returned only when history supports resume:
+
+```json
+{"response": "5 units can ship today.", "session_id": "runtime-conversation-001"}
+```
+
+For the next prompt, send that ID in `x-ms-session-id` under the same authorized
+customer/user scope. It identifies runtime-owned history, not a model-service
+binding or an authorization credential.
+
+For streaming, use `/agents/inventory/chatstream` with the same prompt body.
+The client receives runtime `session`, `tool_start`, `tool_end`, `delta`, `done`
+and `error` events, not the native model API's SSE protocol. Errors or EOF without
+`done` mean failure/incompletion; `done` alone does not prove a tool action succeeded.
+Never automatically replay partially delivered output.
+
+Production deployments must enforce user/conversation/tool isolation; the
+anonymous localhost pilot is not evidence of production customer authorization.
+
+### 7.7 Would a lightweight routing Function reduce cost, and how would we maintain it?
 
 **Potentially, for routing-only rules, not necessarily for an model interaction proxy.**
 This is an optional cost comparison, not a change to the selected POC 09 architecture
