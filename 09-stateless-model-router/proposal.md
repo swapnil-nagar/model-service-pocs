@@ -160,9 +160,10 @@ does not pass the quality/cost/latency gates.
 [POC 06](../06-shared-foundry-apim/README.md) uses a stateful asynchronous agent
 runner over one fixed model, not an intelligent model selector.
 A custom router is not inherently wrong, but adds hosting, availability,
-protocol/SSE, retry and maintenance work unnecessary for this stateless scope.
-Keep orchestration in the runtime; add custom routing only for requirements
-APIM plus Model Router cannot meet, such as unsupported providers or bespoke selection rules.
+configuration and maintenance ownership. A routing-only Function avoids most
+proxy/SSE work; a full inference proxy does not.
+Keep orchestration in the runtime. Consider custom routing only when bespoke
+rules or measured savings justify ownership cost; see the [cost comparison](#traffic-based-monthly-estimate).
 
 ### 7.3 Which components does the team manage?
 
@@ -290,3 +291,126 @@ Target pre-stream error envelope:
 Preserve safe provider errors/retry guidance; uniform envelopes remain hardening work.
 After SSE headers, status cannot change: native errors or truncated EOF mean failure.
 No binding-conflict/expiry, resume, or exactly-once guarantees.
+
+### 7.6 Would a lightweight routing Function reduce cost, and how would we maintain it?
+
+**Potentially, for routing-only rules, not necessarily for an inference proxy.**
+This is an optional cost comparison, not a change to the selected POC 09 architecture
+or approval to create resources.
+
+- **Routing-only:** APIM calls a short-lived Function for an approved backend ID,
+  validates the ID, then forwards inference/SSE itself. The Function never calls
+  Foundry or holds the stream. Use deterministic rules, not an extra LLM classifier.
+- **Streaming proxy:** runtime -> APIM -> Function -> protected APIM model API ->
+  approved model. The Function stays active while awaiting/forwarding the response;
+  billing includes that wall-clock duration, not just CPU work. No direct Foundry access.
+
+Without Model Router, provide qualified named model deployments/backends and their
+quotas. Keep `service-default` and the native API contract; qualify this alternative separately.
+The assumed model mix below does not prove that custom rules match Model Router's quality.
+
+**Maintenance:** version routing rules and the approved backend catalog with IaC;
+use managed identity and fail closed on unknown IDs or routing failures. Own CI
+routing/contract/tool tests, model-retirement evaluations, metadata-only monitoring,
+cold-start/capacity checks, canary rollout and rollback. Keep history and tools in
+the runtime; no binding database is needed. If simple rules fit APIM policies,
+avoid a Function entirely.
+
+#### Traffic-based monthly estimate
+
+Public USD retail rates checked **2026-11-06**, East US 2 / Global Standard:
+
+| Meter | Rate |
+| --- | --- |
+| APIM Developer, one unit | $0.0658/hour; $48.034 at 730 hours/month |
+| GPT-4.1-mini input / output | $0.40 / $1.60 per million tokens |
+| GPT-4.1 input / output | $2.00 / $8.00 per million tokens |
+| Model Router, additional input routing meter | $0.14 per million input tokens |
+| Functions Flex Consumption, on demand | $0.000026/GB-second plus $0.40 per million executions |
+
+**Assumptions:** two model calls per user turn, averaging 2,000 input and 200
+output tokens per call, including resent context. Router and custom columns
+assume 80% mini / 20% GPT-4.1; fixed-model columns use only that model.
+Both Function cases assume 512 MB, one active execution per instance, one
+Function invocation per model call, no always-ready instances, and average
+total billable durations of **1 second routing-only** or **30 seconds streaming proxy**.
+Durations and model mix are hypothetical, not measured sample results.
+
+| User turns/month | APIM + Model Router | APIM + routing-only Function | APIM + streaming-proxy Function | APIM + fixed mini | APIM + fixed GPT-4.1 |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1,000 | $52.63 | $52.09 | $52.85 | $50.27 | $59.23 |
+| 10,000 | $93.95 | $88.62 | $96.16 | $70.43 | $160.03 |
+| 100,000 | $507.23 | $453.91 | $529.31 | $272.03 | $1,168.03 |
+
+Totals include one APIM unit and model tokens. Function costs conservatively
+**exclude free grants**: routing-only compute/executions are $0.03 / $0.27 / $2.68
+for these rows. Available Flex grants of 250,000 executions and 100,000 GB-seconds
+per eligible subscription/month could cover those routing-only meters, but are
+shared with other apps and do not make storage or monitoring free.
+
+For either Function, GB-seconds = turns x 2 x 0.5 GB x duration.
+The routing-only option saves approximately **$5.33/month at 10,000 turns** or
+**$53.32/month at 100,000 turns**, before additional costs and maintenance.
+At 30 seconds/call, the proxy costs more than Model Router; without free grants,
+its routing-meter break-even is about 21.5 seconds/call at 512 MB.
+
+These are estimates, not an actual bill or a quality comparison. They exclude
+storage, logging, networking, runtime hosting, tools, retries and taxes; assume
+no caching discounts. Cold starts, always-ready/Premium hosting, additional APIM
+capacity and different token/model mixes change the result. Developer APIM has
+no production SLA; traffic requires separate quota/load qualification.
+Sources: [Azure retail prices](https://prices.azure.com/api/retail/prices),
+[Functions pricing and free grants](https://azure.microsoft.com/en-us/pricing/details/functions/),
+and [Flex instance sizes/billing](https://learn.microsoft.com/en-us/azure/azure-functions/flex-consumption-plan).
+
+#### High-volume monthly estimate: 1 billion tokens per app
+
+**Confirmed workload:** each app/user consumes 1 billion **total input + output
+tokens per month**. Retain the previous 10:1 input/output ratio: approximately
+909.09 million input and 90.91 million output tokens per app. At 2,200 tokens
+per inference, that is approximately 454,545 model calls per app/month.
+Retain the same model mix, Function durations and retail rates above.
+
+These are clients of a shared service, **not one APIM or Model Router deployment
+per client**. The table excludes production APIM costs: do not reuse the pilot's
+$48.03 Developer-unit estimate at this scale. Add gateway cost `G`, sized for the
+selected production tier, units/regions, request-volume charges where applicable,
+and measured streaming load. `G` may differ between architectures.
+Hosting the 10,000 customer agent-runtime apps is also outside this service estimate.
+
+| Apps/users | Total tokens/month | Model tokens + Model Router | Model tokens + routing-only Function | Model tokens + streaming-proxy Function | Fixed mini model tokens | Fixed GPT-4.1 model tokens |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 1 billion | $1,043.64 | $922.45 | $1,093.82 | $509.09 | $2,545.45 |
+| 100 | 100 billion | $104,363.64 | $92,245.45 | $109,381.82 | $50,909.09 | $254,545.45 |
+| 1,000 | 1 trillion | $1,043,636.36 | $922,454.55 | $1,093,818.18 | $509,090.91 | $2,545,454.55 |
+| 10,000 | 10 trillion | $10,436,363.64 | $9,224,545.45 | $10,938,181.82 | $5,090,909.09 | $25,454,545.45 |
+
+**Shared service total = table amount + production APIM `G` + other cloud costs.**
+The existing exclusions and no-free-grant assumption still apply; Function
+grants are shared per eligible subscription, not multiplied by 10,000 users.
+Fixed-model columns are pricing alternatives, not quality-equivalent results.
+
+At **10,000 apps**, the 80/20 mix contributes **$9,163,636.36/month in model
+inference**. Model Router adds **$1,272,727.27/month**; a 1-second routing-only
+Function adds approximately **$60,909.09/month**. The difference is approximately
+**$1,211,818.18/month**, before different gateway/platform costs, operational
+ownership and validation that custom rules deliver acceptable quality.
+The 30-second streaming proxy adds approximately $1,774,545.45/month instead.
+
+**Capacity is a separate prerequisite, not included in these arithmetic estimates.**
+Using a 730-hour month, 10,000 apps imply approximately:
+
+- 4.545 billion inference requests/month, averaging 1,730 requests/second
+  (103,778 requests/minute) and 228 million combined tokens/minute.
+- 52,000 simultaneous inference connections if all calls stream for 30 seconds.
+- 1,730 concurrent routing Function executions at the assumed 1-second duration;
+  do not assume one Function App or default regional limits cover that demand.
+
+Peaks, provider admission estimates, retries and failover need additional headroom.
+Qualify production APIM, Function concurrency/instance limits, regional model
+quota/capacity and per-client admission before committing to this volume.
+Additional model deployments do not create additional subscription quota.
+The existing A/B pilot does not establish 10,000-client onboarding or throughput.
+All model access remains through APIM; region choices must respect the data policy.
+See [Model Router quotas](https://learn.microsoft.com/en-us/azure/foundry/openai/concepts/model-router#quota-tiers)
+and [Functions scaling limits](https://learn.microsoft.com/en-us/azure/azure-functions/functions-scale).
