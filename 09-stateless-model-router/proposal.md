@@ -1,43 +1,31 @@
 # POC 09 Proposal: Stateless Model Service
 
-**Date:** 2026-11-05
+**Date:** 2026-11-04
 
-**Status:** Proposed contract and runtime changes; the MAF pilot is functional, not production-approved.
-
-Stateless alternative to the [original requirements](../customer-model-service.md),
-not an implementation of their 24-hour affinity guarantee.
-The [session-affinity contract](../CONTRACT.md) is unchanged.
+**Status:** Proposed contract and runtime changes
 
 ## 1. Problem
 
 Customers running agents with MAF or Copilot SDK need governed model access
-without managing provider endpoints or credentials. The agent-runtime must
+**WITHOUT** managing provider endpoints or credentials. The agent-runtime must
 retain conversation context and tool execution while the service selects a
 compatible model for each inference.
 
 ## 2. Requirements
 
-1. Route **every model call through APIM / AI Gateway**, including delegated,
-   workflow and tool-originated calls; prohibit direct Foundry access or fallback.
-2. Accept only `service-default`; route to an operator-approved Model Router
-   subset qualified for the common text, function-tool and context profile.
-3. Keep history, authorization, tools and the agent loop in the runtime.
-   Resend complete context on every inference; do not require provider-side state.
-4. Support JSON and genuine incremental SSE on the same inference operation,
-   preserving each protocol's tool, completion and failure semantics.
-5. Authenticate every request, derive customer identity from verified credentials,
-   separate customer/provider secrets, and enforce limits, deadlines and cancellation.
-6. Make required runtime changes explicit across all roles and entrypoints;
-   qualify MAF first and Copilot SDK separately. Report partial failures and
-   unknown usage explicitly; never replay partial output transparently.
+1. Build a stateless model service that manages and runs models on behalf of customers for the Agent Runtime.
+2. Customers should not have to manage or worry about models. They should simply be able to use the service and run their agents.
+3. Apply customer-level policies by authenticating every request and enforcing usage limits, timeouts, deadlines, and cancellations.
+4. Handle partial failures when the service gets disconnected and make sure requests are handled properly.
+5. Support both JSON and true incremental SSE streaming for the same Model interaction operation, while keeping each protocol's tool calls, completion, and error handling consistent.
+6. Monitor traffic and manage supported model/gateway capacity within approved quotas, budgets and customer policies. Maintain peak-load headroom and explicitly throttle when capacity is unavailable.
 
 ## 3. Out of scope
 
-- Customer-selected models, 24-hour model/version pinning, session bindings or expiry.
+- Customer-selected models, session bindings or expiry.
 - Model-service conversation storage, agent hosting/orchestration or tool execution.
-- Provider-managed conversations/retrieval, background inference, stream resume or replay.
-- Arbitrary provider endpoints, customer-specific model entitlements, dedicated capacity or spending budgets.
-- Production availability, cost or residency guarantees based only on pilot results.
+- Stream resume or replay.
+- Customer cost estimation and support
 
 ## 4. Design and ownership
 
@@ -52,39 +40,74 @@ AI Gateway is APIM's governance capability, not a separate gateway service.
 
 | Approach | Model selection | Team-managed components | Trade-offs / decision |
 | --- | --- | --- | --- |
-| APIM / AI Gateway + Model Router + models | APIM forwards to Model Router, which selects an approved underlying model per inference | APIM policies, router configuration/subset, access, quotas and evaluations | **Selected POC 09 design.** Less custom routing code, but an additional routing meter. MAF pilot functional; production gates pending. |
+| [**Recommended**]APIM / AI Gateway + Model Router + models | APIM forwards to Model Router, which selects an approved underlying model per model interaction onbehalf of agent-runtime | APIM policies, router configuration/subset, access, quotas and evaluations | Less custom routing code, but an additional routing meter. production gates pending. |
 | AI Gateway + models only | APIM maps the alias to a fixed approved model or uses explicit backend-routing/load-balancing policies | APIM policies and approved named model deployments/backends, access, quotas and evaluations | **Alternative / POC 08 baseline.** No Model Router or routing Function charge. Selection is fixed or policy-defined; qualify the exact API/SDK path. |
 | APIM + Function App routing + models | APIM calls a routing-only Function for an approved backend ID, validates it, then forwards inference to the model | APIM, named model deployments, Function hosting/rules, identity, CI, monitoring and rollback | **Considered, not implemented.** Bespoke rules and potential routing-meter savings; additional Function cost, latency and operational ownership. Routing quality needs independent evaluation. |
 
 All three retain `service-default`, runtime-owned history/tools and APIM-only
 model access. The Function row is routing-only, not an inference/streaming proxy;
 both Function variants are covered in the [cost estimates](#traffic-based-monthly-estimate).
+The Capacity Manager below is a shared control-plane component for all three
+approaches, independent of whether model selection uses Model Router or custom rules.
 
 ### 4.2 Selected POC 09 design
 
 ```mermaid
 flowchart TB
+    subgraph CP["Capacity management: control plane - planned"]
+        direction TB
+        MON["Azure Monitor<br/>Request/token demand, latency and throttling"]
+        POL["Service operator-approved limits<br/>Quotas, budgets, customer policies and scale bounds"]
+        CM["Capacity Manager<br/>Background Function App<br/>Monitor, check quota and apply supported capacity changes"]
+        MON --> CM
+        POL --> CM
+    end
     U["User / application"] --> R["Agent-runtime / MAF"]
-    R <-->|"Authorized execution"| T["Customer tools and data"]
+    R -->|"Authorized tool execution"| T["Customer tools and data"]
     subgraph MS["Model Service: stateless inference boundary"]
+        direction TB
         G["APIM / AI Gateway"] --> P["Foundry project Responses endpoint"]
         P --> MR["Foundry Model Router"]
         MR --> M["Approved compatible models"]
     end
     R -->|"Complete context + schemas + service-default"| G
-    G -->|"JSON or incremental SSE"| R
+    CM -.->|"Approved gateway capacity / admission settings"| G
+    CM -.->|"Approved deployment throughput settings"| MR
 ```
+
+Solid arrows show forward requests and control-plane inputs; dashed arrows are
+management-plane updates, not inference calls. Responses/tool results return over
+their originating calls, and telemetry collection arrows are omitted to keep the
+diagram top-down. The Capacity Manager is planned, not deployed or live-qualified.
 
 | Owner | Responsibility |
 | --- | --- |
 | Agent-runtime | User/conversation authorization, history and summarization, tool execution, agent loop, customer-facing JSON/SSE |
 | APIM / AI Gateway | Authenticate each request, derive trusted customer identity, validate/limit requests, map the fixed alias, separate credentials, forward incrementally |
 | Foundry Model Router | Select an eligible model per inference from the operator-approved subset; no same-model continuation guarantee |
-| Operator | Versioned router/API configuration, model qualification, access/network controls, capacity and monitoring |
+| Azure Monitor | Metadata-only demand, usage, latency and failure signals; alerts without prompts or tool results |
+| Capacity Manager - background Function App | Check demand and available quota; apply supported capacity changes within approved bounds; verify outcomes and report failures |
+| Service operator | Versioned configuration, model qualification, access/network controls, approved budgets/scale bounds, quota requests and change approval |
 
-The Model Service is **not another Function App** and owns no conversation, binding, or tool execution.
+The inference boundary has **no custom proxy Function App** and owns no conversation,
+binding or tool execution. The separate Capacity Manager performs management work only.
 Every inference resends context; runtime sessions remain runtime-owned.
 API contracts are in the [FAQ](#75-what-are-the-api-contracts).
+
+### 4.3 Capacity Manager boundaries
+
+- Run on a schedule or monitoring event, not once per model call. Read demand,
+  current allocations and available quota; update only supported gateway/model
+  capacity settings with a scoped management-plane identity, not inference credentials.
+- Enforce approved minimum/maximum capacity, budgets, cooldowns and in-flight
+  request headroom. Do not automatically change the approved model subset or
+  processing regions. Quota increases require provider approval and may not be immediate.
+- Verify changes before reporting success. On stale telemetry or failed updates,
+  log/alert and retain the last approved configuration; APIM continues enforcing
+  admission limits and returns explicit throttling rather than bypassing policy.
+- Keep this controller outside the inference path: no conversation storage, tool
+  execution, model calls or SSE forwarding. Scaling the Function scales the
+  controller, not the underlying models. Microsoft operates managed model serving.
 
 ## 5. Changes needed in the agent-runtime
 
@@ -153,6 +176,7 @@ Recorded POC results, not a new test run or proof of these gates:
 | Statelessness / portability | Fresh worker/connection continues from resent history; no binding lookup; qualify every candidate and observe a real model change before claiming cross-model continuation |
 | JSON / tools / protocols | Each exposed API and exact SDK passes native JSON/SSE, complete authorized tools, matching IDs, explicit failures and correct terminal markers |
 | Incremental delivery / isolation | Through real APIM, at least five controlled events 500 ms apart, each arriving within 250 ms of calibrated emission; interleave customers without cross-customer events |
+| Capacity Manager - planned | Verify demand/quota checks, approved scale bounds/budgets, cooldowns, change confirmation, stale-telemetry/update failures and control-plane outages; no inference calls or policy bypass |
 | Failure / hardening | Test late errors, truncated EOF, disconnects, absolute/idle deadlines, cleanup and retry budgets; complete nested/context validation, `no-store`, consistent safe errors and production user isolation |
 
 Detailed qualification remains in the [design](README.md).
@@ -188,17 +212,23 @@ rules or measured savings justify ownership cost; see the [cost comparison](#tra
 | Existing agent-runtime | Gateway client/configuration, user/history isolation, tools, agent loop and runtime scaling |
 | APIM / AI Gateway | APIs, policies, customer access, gateway capacity, networking and telemetry |
 | Foundry account/project and Model Router deployment | RBAC, router version/mode/subset, quota/capacity, evaluations and cost monitoring |
+| Azure Monitor and Capacity Manager Function | Monitoring/alerts, scoped management identity, scale policies, quota checks, budgets/cooldowns, deployment and rollback |
 
 Microsoft operates the underlying managed routing/model-serving infrastructure.
 No new routing Function App, binding store, separate AI Gateway service or model GPU fleet is required.
+The planned Capacity Manager is a separate background Function, not a per-inference router or proxy.
 
 ### 7.4 How do we scale models when traffic grows?
 
 - Size for inference requests/minute, tokens/minute and concurrent SSE connections;
   tool loops and delegation multiply model calls per user turn.
-- Increase allocated router deployment capacity within supported
+- The [Capacity Manager](#43-capacity-manager-boundaries) checks demand, current
+  allocations and available quota, then applies supported model/gateway changes
+  within approved bounds. Model Router selects models; it does not manage quota
+  increases or gateway/runtime autoscaling.
+- Allocate deployment throughput within supported
   [quota tiers](https://learn.microsoft.com/en-us/azure/foundry/openai/concepts/model-router#quota-tiers);
-  request quota increases where available. Model Router does not create unlimited capacity.
+  request quota increases where available. Approval and scaling are not instantaneous.
 - Scale runtime workers/concurrency and APIM tier/units separately. Apply gateway
   admission limits and bounded backoff on 429 within the remaining deadline;
   never replay partial output or bypass APIM. Capacity changes require approval and load qualification.
@@ -371,10 +401,12 @@ At 30 seconds/call, the proxy costs more than Model Router; without free grants,
 its routing-meter break-even is about 21.5 seconds/call at 512 MB.
 
 These are estimates, not an actual bill or a quality comparison. They exclude
-storage, logging, networking, runtime hosting, tools, retries and taxes; assume
+storage, logging, networking, runtime/Capacity Manager hosting, tools, retries and taxes; assume
 no caching discounts. Cold starts, always-ready/Premium hosting, additional APIM
 capacity and different token/model mixes change the result. Developer APIM has
 no production SLA; traffic requires separate quota/load qualification.
+The Function columns price per-inference routing/proxy work, not the shared
+background Capacity Manager. Its hosting and monitoring cost remains unestimated.
 Sources: [Azure retail prices](https://prices.azure.com/api/retail/prices),
 [Functions pricing and free grants](https://azure.microsoft.com/en-us/pricing/details/functions/),
 and [Flex instance sizes/billing](https://learn.microsoft.com/en-us/azure/azure-functions/flex-consumption-plan).
@@ -401,7 +433,8 @@ Hosting the 10,000 customer agent-runtime apps is also outside this service esti
 | 1,000 | 1 trillion | $1,043,636.36 | $922,454.55 | $1,093,818.18 | $509,090.91 | $2,545,454.55 |
 | 10,000 | 10 trillion | $10,436,363.64 | $9,224,545.45 | $10,938,181.82 | $5,090,909.09 | $25,454,545.45 |
 
-**Shared service total = table amount + production APIM `G` + other cloud costs.**
+**Shared service total = table amount + production APIM `G` + capacity management `C` + other cloud costs.**
+`C` covers the shared Capacity Manager and its monitoring, not a controller per client.
 The existing exclusions and no-free-grant assumption still apply; Function
 grants are shared per eligible subscription, not multiplied by 10,000 users.
 Fixed-model columns are pricing alternatives, not quality-equivalent results.
