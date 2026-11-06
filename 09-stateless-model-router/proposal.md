@@ -68,10 +68,127 @@ flowchart TB
 
 The Model Service is **not another Function App** and owns no conversation, binding, or tool execution.
 Every inference resends context; runtime sessions remain runtime-owned.
+API contracts are in the [FAQ](#75-what-are-the-api-contracts).
 
-## 5. Agent-runtime -> Model Service contracts
+## 5. Changes needed in the agent-runtime
 
-### 5.1 Endpoints and authentication
+**Pilot:** existing MAF works through APIM; no new provider, orchestrator, routes, or history store.
+**Adoption:** promote sample-local checks into an opt-in app-wide gateway-only profile.
+Other deployments retain existing behavior.
+
+Use the existing environment settings:
+
+```text
+AZURE_FUNCTIONS_AGENTS_PROVIDER=azure_openai
+AZURE_OPENAI_ENDPOINT=https://<approved-apim-host>/llm
+AZURE_OPENAI_API_KEY=<customer-apim-subscription-key>
+AZURE_OPENAI_DEPLOYMENT=service-default
+AZURE_FUNCTIONS_AGENTS_MODEL=service-default
+AZURE_FUNCTIONS_AGENTS_ENABLE_COPILOT=false
+```
+
+| Runtime surface | Required change / what stays |
+| --- | --- |
+| Configuration: [env.py](../../azure-functions-agents-runtime/src/azure_functions_agents/config/env.py), [_provider_config.py](../../azure-functions-agents-runtime/src/azure_functions_agents/harness/_provider_config.py) | Validate approved HTTPS host + `/llm`, APIM key and fixed alias. Reject direct providers, base-URL overrides and credential/default-provider fallback; autodetection alone is insufficient. |
+| Resolved agents: [_maf_runner.py](../../azure-functions-agents-runtime/src/azure_functions_agents/harness/agent_framework/_maf_runner.py), [schema.py](../../azure-functions-agents-runtime/src/azure_functions_agents/config/schema.py) | Qualify every catalog entry after merging. Replace concrete models with `service-default`; validate configured `agent_configuration.max_output_tokens` within 1-256 and the common text/function/context profile. |
+| Client/context: [_maf_client.py](../../azure-functions-agents-runtime/src/azure_functions_agents/harness/agent_framework/_maf_client.py), [_maf_execution.py](../../azure-functions-agents-runtime/src/azure_functions_agents/harness/agent_framework/_maf_execution.py) | Keep `OpenAIChatClient`'s native Responses, runtime history/tools and `store: false`. Qualify wire options and budget SDK retries; no protocol translation or provider-state continuation. |
+| Delegation/workflows: [runner.py](../../azure-functions-agents-runtime/src/azure_functions_agents/runner.py), [engine.py](../../azure-functions-agents-runtime/src/azure_functions_agents/workflows/engine.py) | Specialists build separate clients from their resolved models. Enforce the gateway target across all roles/entrypoints and tool-originated model calls; parent settings alone are insufficient. |
+| Endpoints/history/tools: [endpoints.py](../../azure-functions-agents-runtime/src/azure_functions_agents/registration/endpoints.py) | Preserve UI/JSON/SSE and runtime sessions. Enforce user/conversation/tool isolation and coordinate overlapping turns. No browser keys; anonymous debug settings are not production authorization. |
+| Streaming/telemetry: [_maf_execution.py](../../azure-functions-agents-runtime/src/azure_functions_agents/harness/agent_framework/_maf_execution.py), [_maf_observability.py](../../azure-functions-agents-runtime/src/azure_functions_agents/harness/agent_framework/_maf_observability.py) | Qualify native termination/errors, deadlines, idle detection and cancellation cleanup. Record metadata-only attempts/usage; distinguish alias from reported serving model. Disable sensitive-content capture. |
+| Copilot SDK: [_copilot_providers.py](../../azure-functions-agents-runtime/src/azure_functions_agents/harness/copilot_sdk/_copilot_providers.py) | Deferred: host-only Azure endpoint validation rejects `/llm`. Qualify gateway Responses path/header/alias before enabling preview; no direct/built-in fallback. |
+
+**Customer-facing contract stays separate:** `GET /agents/inventory/` serves the UI;
+`POST /agents/inventory/chat` and `/chatstream` accept `{"prompt":"Hello."}`.
+JSON: `response`, `model`, `tool_calls`, optional usable `session_id`.
+Runtime SSE uses `session`, `tool_start`, `tool_end`, `delta`, `done` / `error`;
+correlate by `tool_call_id`. `done` ends the loop, not proof of tool success.
+Session IDs / optional `x-ms-session-id` never authorize access or pin models.
+
+## 6. Gateway controls and acceptance
+
+| Control | Pilot / target |
+| --- | --- |
+| Body / output | At most 1 MiB; requested output 1-256 tokens, default 256; no silent context truncation |
+| Capacity | Per-key pilot: 12 calls/minute, 200/hour; shared router: 10 requests and 10,000 tokens/minute at capacity 10; no fairness or dollar-cap promise |
+| Time / retries | Target: 120-second whole-turn deadline including tools/delegation; each inference uses remaining budget; 30-second upstream-event idle limit; explicitly bounded attempts, no replay after partial output |
+| Gateway forwarding | Pilot `forward-request timeout="120" buffer-response="false"`; its timeout is for backend **headers**, not total stream lifetime; absolute/idle enforcement requires qualification |
+
+APIM alone uses managed identity: project Responses uses the `https://ai.azure.com`
+audience / scoped Foundry User role; account Chat Completions uses
+`https://cognitiveservices.azure.com` / Cognitive Services OpenAI User.
+APIM strips caller credentials and owns backend paths/API versions.
+Enforce RBAC/network/egress: no runtime provider keys, Foundry inference role, or direct-model reachability.
+**Required enforcement, not demonstrated by the public-network pilot.**
+
+Version and requalify router configuration before changes; no 24-hour binding drain.
+Pilot router settings: [IaC](../09-model-router-runtime-sample/infra/main.bicep).
+`NoAutoUpgrade` does not freeze eligibility; GlobalStandard is not regional-only;
+`store: false` is not zero retention. Approve data policy and full-turn cost/latency;
+router-internal attempts can add cost. No added gateway replay.
+Developer APIM has no production SLA.
+
+Recorded [sample evidence](../09-model-router-runtime-sample/README.md): 116 local tests,
+live inventory/weather JSON/SSE tool round trips, and native basic-chat continuation.
+Recorded POC results, not a new test run or proof of these gates:
+
+| Gate | Required evidence |
+| --- | --- |
+| Gateway-only access | Capture every role/entrypoint's model traffic through APIM; reject direct endpoints/overrides; prove runtime credentials and networking cannot bypass the gateway |
+| Statelessness / portability | Fresh worker/connection continues from resent history; no binding lookup; qualify every candidate and observe a real model change before claiming cross-model continuation |
+| JSON / tools / protocols | Each exposed API and exact SDK passes native JSON/SSE, complete authorized tools, matching IDs, explicit failures and correct terminal markers |
+| Incremental delivery / isolation | Through real APIM, at least five controlled events 500 ms apart, each arriving within 250 ms of calibrated emission; interleave customers without cross-customer events |
+| Failure / hardening | Test late errors, truncated EOF, disconnects, absolute/idle deadlines, cleanup and retry budgets; complete nested/context validation, `no-store`, consistent safe errors and production user isolation |
+
+Detailed qualification remains in the [design](README.md).
+Documentation only: runtime changes/deployment are not implemented or authorized.
+See the [APIM timeout reference](https://learn.microsoft.com/en-us/azure/api-management/forward-request-policy)
+and [Responses routing reference](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/responses-model-routing).
+
+## 7. FAQ
+
+### 7.1 Why not use AI Gateway alone? Why Model Router?
+
+**We use both.** [AI Gateway](https://learn.microsoft.com/en-us/azure/api-management/genai-gateway-capabilities)
+is APIM's governance capability, not another service: authentication, limits,
+observability and policy-based backend routing/load balancing.
+Model Router adds prompt-aware model selection within an approved subset.
+APIM remains mandatory; keep POC 08's fixed-model baseline if managed routing
+does not pass the quality/cost/latency gates.
+
+### 7.2 Why not create our own routing component, like POC 06?
+
+[POC 06](../06-shared-foundry-apim/README.md) uses a stateful asynchronous agent
+runner over one fixed model, not an intelligent model selector.
+A custom router is not inherently wrong, but adds hosting, availability,
+protocol/SSE, retry and maintenance work unnecessary for this stateless scope.
+Keep orchestration in the runtime; add custom routing only for requirements
+APIM plus Model Router cannot meet, such as unsupported providers or bespoke selection rules.
+
+### 7.3 Which components does the team manage?
+
+| Component | Team responsibility |
+| --- | --- |
+| Existing agent-runtime | Gateway client/configuration, user/history isolation, tools, agent loop and runtime scaling |
+| APIM / AI Gateway | APIs, policies, customer access, gateway capacity, networking and telemetry |
+| Foundry account/project and Model Router deployment | RBAC, router version/mode/subset, quota/capacity, evaluations and cost monitoring |
+
+Microsoft operates the underlying managed routing/model-serving infrastructure.
+No new routing Function App, binding store, separate AI Gateway service or model GPU fleet is required.
+
+### 7.4 How do we scale models when traffic grows?
+
+- Size for inference requests/minute, tokens/minute and concurrent SSE connections;
+  tool loops and delegation multiply model calls per user turn.
+- Increase allocated router deployment capacity within supported
+  [quota tiers](https://learn.microsoft.com/en-us/azure/foundry/openai/concepts/model-router#quota-tiers);
+  request quota increases where available. Model Router does not create unlimited capacity.
+- Scale runtime workers/concurrency and APIM tier/units separately. Apply gateway
+  admission limits and bounded backoff on 429 within the remaining deadline;
+  never replay partial output or bypass APIM. Capacity changes require approval and load qualification.
+
+### 7.5 What are the API contracts?
+
+#### Endpoints and authentication
 
 Public base: `https://<approved-apim-host>/llm`. All operations support JSON and SSE.
 
@@ -87,7 +204,7 @@ Keep this **APIM key**, not a provider key, in backend secret storage.
 Identity comes from the verified subscription, not caller metadata.
 Entra authentication is future work. No session/assignment/discovery API is required.
 
-### 5.2 Request and result
+#### Request and result
 
 | Field / rule | Contract |
 | --- | --- |
@@ -129,7 +246,7 @@ Function-call completion is not user-turn completion.
 Preserve metadata; router names do not prove underlying-model attribution.
 Missing usage/attribution means unknown, not zero.
 
-### 5.3 Tools and continuation
+#### Tools and continuation
 
 | Protocol | Tool schema / returned call / next request |
 | --- | --- |
@@ -142,7 +259,7 @@ each may select another model. Call IDs are correlation, not authorization/bindi
 Return explicit tool failures; side effects require idempotency/reconciliation.
 See [Chat Completions examples](../08-stateless-ai-gateway/contract-examples.md), using this proposal's `api-key` header.
 
-### 5.4 Streaming and errors
+#### Streaming and errors
 
 Successful SSE starts HTTP 200 with `Content-Type: text/event-stream`.
 The target also requires `Cache-Control: no-store` (**not yet set by the pilot policy**).
@@ -173,77 +290,3 @@ Target pre-stream error envelope:
 Preserve safe provider errors/retry guidance; uniform envelopes remain hardening work.
 After SSE headers, status cannot change: native errors or truncated EOF mean failure.
 No binding-conflict/expiry, resume, or exactly-once guarantees.
-
-## 6. Changes needed in the agent-runtime
-
-**Pilot:** existing MAF works through APIM; no new provider, orchestrator, routes, or history store.
-**Adoption:** promote sample-local checks into an opt-in app-wide gateway-only profile.
-Other deployments retain existing behavior.
-
-Use the existing environment settings:
-
-```text
-AZURE_FUNCTIONS_AGENTS_PROVIDER=azure_openai
-AZURE_OPENAI_ENDPOINT=https://<approved-apim-host>/llm
-AZURE_OPENAI_API_KEY=<customer-apim-subscription-key>
-AZURE_OPENAI_DEPLOYMENT=service-default
-AZURE_FUNCTIONS_AGENTS_MODEL=service-default
-AZURE_FUNCTIONS_AGENTS_ENABLE_COPILOT=false
-```
-
-| Runtime surface | Required change / what stays |
-| --- | --- |
-| Configuration: [env.py](../../azure-functions-agents-runtime/src/azure_functions_agents/config/env.py), [_provider_config.py](../../azure-functions-agents-runtime/src/azure_functions_agents/harness/_provider_config.py) | Validate approved HTTPS host + `/llm`, APIM key and fixed alias. Reject direct providers, base-URL overrides and credential/default-provider fallback; autodetection alone is insufficient. |
-| Resolved agents: [_maf_runner.py](../../azure-functions-agents-runtime/src/azure_functions_agents/harness/agent_framework/_maf_runner.py), [schema.py](../../azure-functions-agents-runtime/src/azure_functions_agents/config/schema.py) | Qualify every catalog entry after merging. Replace concrete models with `service-default`; validate configured `agent_configuration.max_output_tokens` within 1-256 and the common text/function/context profile. |
-| Client/context: [_maf_client.py](../../azure-functions-agents-runtime/src/azure_functions_agents/harness/agent_framework/_maf_client.py), [_maf_execution.py](../../azure-functions-agents-runtime/src/azure_functions_agents/harness/agent_framework/_maf_execution.py) | Keep `OpenAIChatClient`'s native Responses, runtime history/tools and `store: false`. Qualify wire options and budget SDK retries; no protocol translation or provider-state continuation. |
-| Delegation/workflows: [runner.py](../../azure-functions-agents-runtime/src/azure_functions_agents/runner.py), [engine.py](../../azure-functions-agents-runtime/src/azure_functions_agents/workflows/engine.py) | Specialists build separate clients from their resolved models. Enforce the gateway target across all roles/entrypoints and tool-originated model calls; parent settings alone are insufficient. |
-| Endpoints/history/tools: [endpoints.py](../../azure-functions-agents-runtime/src/azure_functions_agents/registration/endpoints.py) | Preserve UI/JSON/SSE and runtime sessions. Enforce user/conversation/tool isolation and coordinate overlapping turns. No browser keys; anonymous debug settings are not production authorization. |
-| Streaming/telemetry: [_maf_execution.py](../../azure-functions-agents-runtime/src/azure_functions_agents/harness/agent_framework/_maf_execution.py), [_maf_observability.py](../../azure-functions-agents-runtime/src/azure_functions_agents/harness/agent_framework/_maf_observability.py) | Qualify native termination/errors, deadlines, idle detection and cancellation cleanup. Record metadata-only attempts/usage; distinguish alias from reported serving model. Disable sensitive-content capture. |
-| Copilot SDK: [_copilot_providers.py](../../azure-functions-agents-runtime/src/azure_functions_agents/harness/copilot_sdk/_copilot_providers.py) | Deferred: host-only Azure endpoint validation rejects `/llm`. Qualify gateway Responses path/header/alias before enabling preview; no direct/built-in fallback. |
-
-**Customer-facing contract stays separate:** `GET /agents/inventory/` serves the UI;
-`POST /agents/inventory/chat` and `/chatstream` accept `{"prompt":"Hello."}`.
-JSON: `response`, `model`, `tool_calls`, optional usable `session_id`.
-Runtime SSE uses `session`, `tool_start`, `tool_end`, `delta`, `done` / `error`;
-correlate by `tool_call_id`. `done` ends the loop, not proof of tool success.
-Session IDs / optional `x-ms-session-id` never authorize access or pin models.
-
-## 7. Gateway controls and acceptance
-
-| Control | Pilot / target |
-| --- | --- |
-| Body / output | At most 1 MiB; requested output 1-256 tokens, default 256; no silent context truncation |
-| Capacity | Per-key pilot: 12 calls/minute, 200/hour; shared router: 10 requests and 10,000 tokens/minute at capacity 10; no fairness or dollar-cap promise |
-| Time / retries | Target: 120-second whole-turn deadline including tools/delegation; each inference uses remaining budget; 30-second upstream-event idle limit; explicitly bounded attempts, no replay after partial output |
-| Gateway forwarding | Pilot `forward-request timeout="120" buffer-response="false"`; its timeout is for backend **headers**, not total stream lifetime; absolute/idle enforcement requires qualification |
-
-APIM alone uses managed identity: project Responses uses the `https://ai.azure.com`
-audience / scoped Foundry User role; account Chat Completions uses
-`https://cognitiveservices.azure.com` / Cognitive Services OpenAI User.
-APIM strips caller credentials and owns backend paths/API versions.
-Enforce RBAC/network/egress: no runtime provider keys, Foundry inference role, or direct-model reachability.
-**Required enforcement, not demonstrated by the public-network pilot.**
-
-Version and requalify router configuration before changes; no 24-hour binding drain.
-Pilot router settings: [IaC](../09-model-router-runtime-sample/infra/main.bicep).
-`NoAutoUpgrade` does not freeze eligibility; GlobalStandard is not regional-only;
-`store: false` is not zero retention. Approve data policy and full-turn cost/latency;
-router-internal attempts can add cost. No added gateway replay.
-Developer APIM has no production SLA.
-
-Recorded [sample evidence](../09-model-router-runtime-sample/README.md): 116 local tests,
-live inventory/weather JSON/SSE tool round trips, and native basic-chat continuation.
-Recorded POC results, not a new test run or proof of these gates:
-
-| Gate | Required evidence |
-| --- | --- |
-| Gateway-only access | Capture every role/entrypoint's model traffic through APIM; reject direct endpoints/overrides; prove runtime credentials and networking cannot bypass the gateway |
-| Statelessness / portability | Fresh worker/connection continues from resent history; no binding lookup; qualify every candidate and observe a real model change before claiming cross-model continuation |
-| JSON / tools / protocols | Each exposed API and exact SDK passes native JSON/SSE, complete authorized tools, matching IDs, explicit failures and correct terminal markers |
-| Incremental delivery / isolation | Through real APIM, at least five controlled events 500 ms apart, each arriving within 250 ms of calibrated emission; interleave customers without cross-customer events |
-| Failure / hardening | Test late errors, truncated EOF, disconnects, absolute/idle deadlines, cleanup and retry budgets; complete nested/context validation, `no-store`, consistent safe errors and production user isolation |
-
-Detailed qualification remains in the [design](README.md).
-Documentation only: runtime changes/deployment are not implemented or authorized.
-See the [APIM timeout reference](https://learn.microsoft.com/en-us/azure/api-management/forward-request-policy)
-and [Responses routing reference](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/responses-model-routing).
