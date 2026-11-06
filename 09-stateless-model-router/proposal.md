@@ -46,6 +46,22 @@ This includes main/delegated agents, workflows, and tool-originated model calls.
 There is **no direct access from the agent-runtime or browser to Foundry models**;
 gateway failure must not trigger a bypass/fallback. Only the gateway identity invokes Foundry.
 
+### 4.1 Designs considered
+
+AI Gateway is APIM's governance capability, not a separate gateway service.
+
+| Approach | Model selection | Team-managed components | Trade-offs / decision |
+| --- | --- | --- | --- |
+| APIM / AI Gateway + Model Router + models | APIM forwards to Model Router, which selects an approved underlying model per inference | APIM policies, router configuration/subset, access, quotas and evaluations | **Selected POC 09 design.** Less custom routing code, but an additional routing meter. MAF pilot functional; production gates pending. |
+| AI Gateway + models only | APIM maps the alias to a fixed approved model or uses explicit backend-routing/load-balancing policies | APIM policies and approved named model deployments/backends, access, quotas and evaluations | **Alternative / POC 08 baseline.** No Model Router or routing Function charge. Selection is fixed or policy-defined; qualify the exact API/SDK path. |
+| APIM + Function App routing + models | APIM calls a routing-only Function for an approved backend ID, validates it, then forwards inference to the model | APIM, named model deployments, Function hosting/rules, identity, CI, monitoring and rollback | **Considered, not implemented.** Bespoke rules and potential routing-meter savings; additional Function cost, latency and operational ownership. Routing quality needs independent evaluation. |
+
+All three retain `service-default`, runtime-owned history/tools and APIM-only
+model access. The Function row is routing-only, not an inference/streaming proxy;
+both Function variants are covered in the [cost estimates](#traffic-based-monthly-estimate).
+
+### 4.2 Selected POC 09 design
+
 ```mermaid
 flowchart TB
     U["User / application"] --> R["Agent-runtime / MAF"]
