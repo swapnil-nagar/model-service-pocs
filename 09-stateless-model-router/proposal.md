@@ -48,58 +48,58 @@ AI Gateway is APIM's governance capability, not a separate gateway service.
 All three retain default model, runtime-owned history/tools and APIM-only
 model access. The Function row is routing-only, not an model interation/streaming proxy;
 both Function variants are covered in the [cost estimates](#traffic-based-monthly-estimate).
-The Capacity Manager below is a shared **control-plane component for all three
+The Capacity Control Plane below is a shared **control-plane component for all three
 approaches**, independent of whether model selection uses Model Router or custom rules.
 
 ### 4.2 Selected POC 09 design
 
 ```mermaid
 flowchart TB
-    subgraph CP["Capacity management: control plane - planned"]
+    subgraph CP["Capacity Control Plane - planned"]
         direction TB
         MON["Azure Monitor<br/>Request/token demand, latency and throttling"]
         POL["Service operator-approved limits<br/>Quotas, budgets, customer policies and scale bounds"]
-        CM["Capacity Manager<br/>Background Function App<br/>Monitor, check quota and apply supported capacity changes"]
-        MON --> CM
-        POL --> CM
+        CCP["Capacity Control Plane<br/>Background Function App<br/>Monitor, check quota and apply supported capacity changes"]
+        MON --> CCP
+        POL --> CCP
     end
     U["User / application"] --> R["Agent-runtime / MAF"]
     R -->|"Authorized tool execution"| T["Customer tools and data"]
     subgraph MS["Model Service: stateless model interaction boundary"]
         direction TB
-        G["APIM / AI Gateway"] --> P["Foundry project Responses endpoint"]
+        G["APIM / AI Gateway<br/>Customer policy enforcement"] --> P["Foundry project Responses endpoint"]
         P --> MR["Foundry Model Router"]
         MR --> M["Approved compatible models"]
     end
     R -->|"Complete context + schemas + service-default"| G
-    CM -.->|"Approved gateway capacity / admission settings"| G
-    CM -.->|"Approved deployment throughput settings"| MR
+    CCP -.->|"Approved gateway capacity / admission settings"| G
+    CCP -.->|"Approved deployment throughput settings"| MR
 ```
 
 Solid arrows show forward requests and control-plane inputs; dashed arrows are
 management-plane updates, not model interaction calls. Responses/tool results return over
 their originating calls, and telemetry collection arrows are omitted to keep the
-diagram top-down. The Capacity Manager is planned, not deployed or live-qualified.
+diagram top-down. The Capacity Control Plane is planned, not deployed or live-qualified.
 
 | Owner | Responsibility |
 | --- | --- |
 | Agent-runtime | User/conversation authorization, history and summarization, tool execution, agent loop, customer-facing JSON/SSE |
-| APIM / AI Gateway | Authenticate each request, derive trusted customer identity, validate/limit requests, map the fixed alias, separate credentials, forward incrementally |
+| APIM / AI Gateway | Authenticate each request, derive trusted customer identity, enforce published policy/backend mappings and supported limits, separate credentials, forward incrementally |
 | Foundry Model Router | Select an eligible model per model interaction from the operator-approved subset; no same-model continuation guarantee |
 | Azure Monitor | Metadata-only demand, usage, latency and failure signals; alerts without prompts or tool results |
-| Capacity Manager - background Function App | Check demand and available quota; apply supported capacity changes within approved bounds; verify outcomes and report failures |
-| Service operator | Versioned configuration, model qualification, access/network controls, approved budgets/scale bounds, quota requests and change approval |
+| Capacity Control Plane - background Function App | Check demand and available quota; apply supported capacity changes within approved bounds; verify outcomes and report failures |
+| Service operator | Customer onboarding, versioned policy/backend publication, model qualification, access/network controls, approved budgets/scale bounds, quota requests and change approval |
 
 The model interaction boundary has **no custom proxy Function App** and owns no conversation,
-binding or tool execution. The separate Capacity Manager performs management work only.
+binding or tool execution. The separate Capacity Control Plane performs management work only.
 Every model interaction resends context; runtime sessions remain runtime-owned.
 API contracts are in the [FAQ](#75-what-are-the-api-contracts).
 
 The runtime sends approved local/MCP tool schemas to the model; the model requests calls but never executes tools or receives their credentials.
 The runtime validates/authorizes calls, executes local handlers or invokes MCP servers, and resends context plus matching results through APIM.
-Model Router and Capacity Manager do not execute tools; remote MCP connections require scoped authentication and end-to-end qualification.
+Model Router and Capacity Control Plane do not execute tools; remote MCP connections require scoped authentication and end-to-end qualification.
 
-### 4.3 Capacity Manager boundaries
+### 4.3 Capacity Control Plane boundaries
 
 - Run on a schedule or monitoring event, not once per model call. Read demand,
   current allocations and available quota; update only supported gateway/model
@@ -122,7 +122,13 @@ Model Router and Capacity Manager do not execute tools; remote MCP connections r
 - **Agent-runtime:** Enforce whole-turn and stream-idle deadlines; propagate cancellation and clean up connections. Cancellation is not rollback or zero-charge assurance.
 - **Agent-runtime + tool/MCP services:** Preserve authorized runtime checkpoints and completed tool results; require idempotency/reconciliation for side effects. The model service remains stateless.
 - **APIM / AI Gateway:** Configure native APIM limits/circuit breakers and approved backend failover; no extra resilience app or direct Foundry fallback.
-- **Azure Monitor + Capacity Manager + Service operator:** Monitor failures/usage; Capacity Manager handles capacity, not retries. Test outages, truncation and duplicate actions; regional gateway/model redundancy requires separate approval.
+- **Azure Monitor + Capacity Control Plane + Service operator:** Monitor failures/usage; Capacity Control Plane handles capacity, not retries. Test outages, truncation and duplicate actions; regional gateway/model redundancy requires separate approval.
+
+### 4.5 Customer onboarding and policy enforcement
+
+Customer onboarding must verify workload identity and approve access/data boundaries, usage limits and deadlines before enabling access; the service operator chooses compatible backends.
+Publish versioned identity-to-policy/backend mappings to APIM; native authentication, validation, routing and supported limit policies enforce them before model calls, denying unknown/conflicting mappings without a separate policy Function.
+Router subsets/data policy must match onboarding approvals; runtime/MCP enforce user/history/tool access and whole-turn deadlines. Multi-region global limits require separate coordination.
 
 ## 5. Changes needed in the agent-runtime
 
@@ -192,7 +198,8 @@ Recorded POC results, not a new test run or proof of these gates:
 | Statelessness / portability | Fresh worker/connection continues from resent history; no binding lookup; qualify every candidate and observe a real model change before claiming cross-model continuation |
 | JSON / tools / protocols | Each exposed API and exact SDK passes native JSON/SSE, complete authorized tools, matching IDs, explicit failures and correct terminal markers |
 | Incremental delivery / isolation | Through real APIM, at least five controlled events 500 ms apart, each arriving within 250 ms of calibrated emission; interleave customers without cross-customer events |
-| Capacity Manager - planned | Verify demand/quota checks, approved scale bounds/budgets, cooldowns, change confirmation, stale-telemetry/update failures and control-plane outages; no model interaction calls or policy bypass |
+| Capacity Control Plane - planned | Verify demand/quota checks, approved scale bounds/budgets, cooldowns, change confirmation, stale-telemetry/update failures and control-plane outages; no model interaction calls or policy bypass |
+| Customer onboarding/policy | Verify published identity/policy/backend mappings; reject unknown/spoofed identities and unapproved overrides; qualify per-customer limits and runtime history/tool authorization |
 | Failure / hardening | Test late errors, truncated EOF, disconnects, absolute/idle deadlines, cleanup and retry budgets; complete nested/context validation, `no-store`, consistent safe errors and production user isolation |
 
 Detailed qualification remains in the [design](README.md).
@@ -228,17 +235,18 @@ rules or measured savings justify ownership cost; see the [cost comparison](#tra
 | Existing agent-runtime | Gateway client/configuration, user/history isolation, tools, agent loop and runtime scaling |
 | APIM / AI Gateway | APIs, policies, customer access, gateway capacity, networking and telemetry |
 | Foundry account/project and Model Router deployment | RBAC, router version/mode/subset, quota/capacity, evaluations and cost monitoring |
-| Azure Monitor and Capacity Manager Function | Monitoring/alerts, scoped management identity, scale policies, quota checks, budgets/cooldowns, deployment and rollback |
+| Azure Monitor and Capacity Control Plane Function | Monitoring/alerts, scoped management identity, scale policies, quota checks, budgets/cooldowns, deployment and rollback |
+| Service operator - onboarding | Approve customer identity/policy boundaries and publish versioned APIM backend/limit configuration |
 
 Microsoft operates the underlying managed routing/model-serving infrastructure.
 No new routing Function App, binding store, separate AI Gateway service or model GPU fleet is required.
-The planned Capacity Manager is a separate background Function, not a per-model interaction router or proxy.
+The planned Capacity Control Plane is a separate background Function, not a per-model interaction router or proxy.
 
 ### 7.4 How do we scale models when traffic grows?
 
 - Size for model interaction requests/minute, tokens/minute and concurrent SSE connections;
   tool loops and delegation multiply model calls per user turn.
-- The [Capacity Manager](#43-capacity-manager-boundaries) checks demand, current
+- The [Capacity Control Plane](#43-capacity-control-plane-boundaries) checks demand, current
   allocations and available quota, then applies supported model/gateway changes
   within approved bounds. Model Router selects models; it does not manage quota
   increases or gateway/runtime autoscaling.
@@ -360,6 +368,7 @@ The customer uses the **agent-runtime API**, not Foundry or the model-service AP
 directly. The runtime operator configures one backend service connection and
 approved agents/tools; model deployments, selection and provider credentials stay
 service-owned. The browser never holds the APIM subscription key.
+Access is enabled only after [customer onboarding](#45-customer-onboarding-and-policy-enforcement).
 
 1. The client authenticates to the runtime and sends a prompt to the agent.
 2. The runtime loads authorized history and sends instructions, context and
@@ -369,7 +378,7 @@ service-owned. The browser never holds the APIM subscription key.
    local handler or MCP call, then sends full context and matching results through
    APIM again. A later model call may select a different eligible model.
 4. The runtime returns an answer as JSON or one customer-facing SSE stream spanning
-   the agent/tool loop. The Capacity Manager remains background control-plane work.
+   the agent/tool loop. The Capacity Control Plane remains background control-plane work.
 
 Example using the sample's runtime endpoint (authentication headers omitted;
 use the deployment's configured runtime authentication):
@@ -466,12 +475,12 @@ At 30 seconds/call, the proxy costs more than Model Router; without free grants,
 its routing-meter break-even is about 21.5 seconds/call at 512 MB.
 
 These are estimates, not an actual bill or a quality comparison. They exclude
-storage, logging, networking, runtime/Capacity Manager hosting, tools, retries and taxes; assume
+storage, logging, networking, runtime/Capacity Control Plane hosting, tools, retries and taxes; assume
 no caching discounts. Cold starts, always-ready/Premium hosting, additional APIM
 capacity and different token/model mixes change the result. Developer APIM has
 no production SLA; traffic requires separate quota/load qualification.
 The Function columns price per-model interaction routing/proxy work, not the shared
-background Capacity Manager. Its hosting and monitoring cost remains unestimated.
+background Capacity Control Plane. Its hosting and monitoring cost remains unestimated.
 Sources: [Azure retail prices](https://prices.azure.com/api/retail/prices),
 [Functions pricing and free grants](https://azure.microsoft.com/en-us/pricing/details/functions/),
 and [Flex instance sizes/billing](https://learn.microsoft.com/en-us/azure/azure-functions/flex-consumption-plan).
@@ -498,8 +507,8 @@ Hosting the 10,000 customer agent-runtime apps is also outside this service esti
 | 1,000 | 1 trillion | $1,043,636.36 | $922,454.55 | $1,093,818.18 | $509,090.91 | $2,545,454.55 |
 | 10,000 | 10 trillion | $10,436,363.64 | $9,224,545.45 | $10,938,181.82 | $5,090,909.09 | $25,454,545.45 |
 
-**Shared service total = table amount + production APIM `G` + capacity management `C` + other cloud costs.**
-`C` covers the shared Capacity Manager and its monitoring, not a controller per client.
+**Shared service total = table amount + production APIM `G` + Capacity Control Plane `C` + other cloud costs.**
+`C` covers the shared Capacity Control Plane and its monitoring, not a controller per client.
 The existing exclusions and no-free-grant assumption still apply; Function
 grants are shared per eligible subscription, not multiplied by 10,000 users.
 Fixed-model columns are pricing alternatives, not quality-equivalent results.
