@@ -94,6 +94,10 @@ binding or tool execution. The separate Capacity Manager performs management wor
 Every inference resends context; runtime sessions remain runtime-owned.
 API contracts are in the [FAQ](#75-what-are-the-api-contracts).
 
+The runtime sends approved local/MCP tool schemas to the model; the model requests calls but never executes tools or receives their credentials.
+The runtime validates/authorizes calls, executes local handlers or invokes MCP servers, and resends context plus matching results through APIM.
+Model Router and Capacity Manager do not execute tools; remote MCP connections require scoped authentication and end-to-end qualification.
+
 ### 4.3 Capacity Manager boundaries
 
 - Run on a schedule or monitoring event, not once per model call. Read demand,
